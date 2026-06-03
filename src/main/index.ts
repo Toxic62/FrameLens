@@ -2,9 +2,12 @@ import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import { electronApp, is, optimizer } from '@electron-toolkit/utils'
 import { join } from 'node:path'
 import { readFile } from 'node:fs/promises'
-import { OPEN_STRUCTURE_CHANNEL } from '@shared/ipc'
-import type { OpenStructureResult } from '@shared/structure'
+import { GET_CURRENT_STRUCTURE_CHANNEL, OPEN_STRUCTURE_CHANNEL } from '@shared/ipc'
+import type { LoadedStructure, OpenStructureResult } from '@shared/structure'
 import { loadStructureFile, toOpenStructureError } from './structure/structureLoader'
+
+let currentStructure: LoadedStructure | null = null
+let currentFilePath: string | null = null
 
 function createWindow(): void {
   const mainWindow = new BrowserWindow({
@@ -57,10 +60,16 @@ async function openStructureFile(): Promise<OpenStructureResult> {
   try {
     const data = await readFile(filePath)
     const structure = await loadStructureFile(filePath, data)
+    currentFilePath = filePath
+    currentStructure = structure
     return { ok: true, structure }
   } catch (error) {
     return toOpenStructureError(error)
   }
+}
+
+function getCurrentStructure(): LoadedStructure | null {
+  return currentStructure
 }
 
 app.whenReady().then(() => {
@@ -71,6 +80,7 @@ app.whenReady().then(() => {
   })
 
   ipcMain.handle(OPEN_STRUCTURE_CHANNEL, openStructureFile)
+  ipcMain.handle(GET_CURRENT_STRUCTURE_CHANNEL, getCurrentStructure)
   createWindow()
 
   app.on('activate', () => {

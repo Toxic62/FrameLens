@@ -3,6 +3,7 @@ out
 dist
 coverage
 .DS_Store
+.Rhistory
 *.local
 *.tsbuildinfo
 npm-debug.log*

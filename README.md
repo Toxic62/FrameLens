@@ -12,6 +12,20 @@ FrameLens is a cross-platform desktop app for viewing, and eventually editing, M
 
 Milestone 1 intentionally does not bundle Minecraft assets, load textures/models, execute mod code, scan installed instances, include a FrameLens Bridge mod, or export edited structures.
 
+## Milestone 1.1
+
+- Keeps the current loaded structure in Electron main-process memory for same-session renderer restoration.
+- Restores the current structure if the renderer reloads or remounts.
+- Rebuilds the debug cube mesh after WebGL context restoration.
+
+## Milestone 2
+
+- Orbit, pan, zoom, fit, and reset viewport controls.
+- X/Y/Z clipping controls that visually hide outer layers without mutating structure data.
+- Visible-block picking with selected block details.
+- Searchable palette panel and entity list.
+- Structure summary with dimensions, total blocks, non-air blocks, visible blocks, palette count, and entity count.
+
 ## Architecture Notes
 
 - Filesystem access lives in Electron main and is exposed to the renderer through a narrow preload API.
