@@ -2,6 +2,8 @@ export type RenderMode = 'debug' | 'palette' | 'textured'
 
 export type AssetSourceKind = 'minecraft' | 'instance' | 'folder'
 
+export type VanillaAssetStatus = 'missing-version' | 'cached' | 'downloaded' | 'failed'
+
 export interface AssetSourceSummary {
   readonly id: string
   readonly name: string
@@ -11,6 +13,8 @@ export interface AssetSourceSummary {
   readonly archiveCount: number
   readonly looseAssetRootCount: number
   readonly hasVanillaJar: boolean
+  readonly vanillaStatus: VanillaAssetStatus
+  readonly vanillaMessage?: string
 }
 
 export interface AssetScanResult {
@@ -21,6 +25,7 @@ export interface AssetScanResult {
 export interface AssetActivationResult {
   readonly ok: boolean
   readonly source: AssetSourceSummary | null
+  readonly cancelled?: boolean
   readonly message?: string
 }
 

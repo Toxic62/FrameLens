@@ -1,8 +1,9 @@
 import { mkdtemp, mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { describe, expect, it } from 'vitest'
-import { activateAssetRootPath, resolveBlockAssets } from './assetService'
+import JSZip from 'jszip'
+import { beforeEach, describe, expect, it } from 'vitest'
+import { activateAssetRootPath, resolveBlockAssets, setDownloadClientForTests, setVanillaCacheRoot } from './assetService'
 
 const PNG_1X1 = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=',
@@ -10,6 +11,22 @@ const PNG_1X1 = Buffer.from(
 )
 
 describe('assetService', () => {
+  beforeEach(async () => {
+    setVanillaCacheRoot(await mkdtemp(join(tmpdir(), 'framelens-vanilla-cache-')))
+    setDownloadClientForTests({
+      async getJson(url) {
+        if (url.endsWith('version_manifest_v2.json')) {
+          return { versions: [{ id: '1.20.1', url: 'https://example.test/1.20.1.json' }] }
+        }
+
+        return { downloads: { client: { url: 'https://example.test/1.20.1-client.jar' } } }
+      },
+      async getBuffer() {
+        return createVanillaClientJar()
+      }
+    })
+  })
+
   it('resolves loose full-cube block textures without executing code', async () => {
     const root = await mkdtemp(join(tmpdir(), 'framelens-assets-'))
     await mkdir(join(root, 'kubejs', 'assets', 'minecraft', 'blockstates'), { recursive: true })
@@ -34,6 +51,29 @@ describe('assetService', () => {
     expect(result.assets['minecraft:stone']).toMatchObject({
       assetKey: 'minecraft:stone',
       blockName: 'minecraft:stone',
+      status: 'textured-cube'
+    })
+    expect(result.assets['minecraft:stone']?.faces?.north).toMatch(/^data:image\/png;base64,/)
+  })
+
+  it('downloads and caches vanilla assets for a selected instance version', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'framelens-vanilla-instance-'))
+    await writeFile(join(root, 'minecraftinstance.json'), JSON.stringify({ minecraftVersion: '1.20.1' }))
+
+    const activation = await activateAssetRootPath(root)
+    expect(activation).toMatchObject({
+      ok: true,
+      source: {
+        rootPath: root,
+        minecraftVersion: '1.20.1',
+        hasVanillaJar: true,
+        vanillaStatus: 'downloaded'
+      }
+    })
+
+    const result = await resolveBlockAssets([{ blockName: 'minecraft:stone', properties: {} }])
+    expect(result.assets['minecraft:stone']).toMatchObject({
+      assetKey: 'minecraft:stone',
       status: 'textured-cube'
     })
     expect(result.assets['minecraft:stone']?.faces?.north).toMatch(/^data:image\/png;base64,/)
@@ -98,3 +138,14 @@ describe('assetService', () => {
     20000
   )
 })
+
+async function createVanillaClientJar(): Promise<Buffer> {
+  const zip = new JSZip()
+  zip.file('assets/minecraft/blockstates/stone.json', JSON.stringify({ variants: { '': { model: 'minecraft:block/stone' } } }))
+  zip.file(
+    'assets/minecraft/models/block/stone.json',
+    JSON.stringify({ parent: 'minecraft:block/cube_all', textures: { all: 'minecraft:block/stone' } })
+  )
+  zip.file('assets/minecraft/textures/block/stone.png', PNG_1X1)
+  return Buffer.from(await zip.generateAsync({ type: 'uint8array' }))
+}

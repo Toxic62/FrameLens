@@ -1,7 +1,7 @@
 import { homedir } from 'node:os'
 import { basename, join, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { readdir, readFile, stat } from 'node:fs/promises'
+import { mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises'
 import JSZip from 'jszip'
 import type {
   AssetActivationResult,
@@ -11,7 +11,8 @@ import type {
   BlockAssetRequest,
   BlockFaceTextures,
   ResolvedBlockAsset,
-  ResolvedBlockAssetsResult
+  ResolvedBlockAssetsResult,
+  VanillaAssetStatus
 } from '@shared/assets'
 import { createBlockAssetKey } from '@shared/assets'
 
@@ -27,26 +28,37 @@ interface ArchiveCache {
 
 type JsonRecord = Record<string, unknown>
 
-const TEXTURE_FALLBACK_COLOR = '#9aa8b3'
 const MAX_MODEL_DEPTH = 12
+const VERSION_MANIFEST_URL = 'https://piston-meta.mojang.com/mc/game/version_manifest_v2.json'
 const archiveCache = new Map<string, Promise<ArchiveCache | null>>()
 const jsonCache = new Map<string, Promise<JsonRecord | null>>()
 const binaryCache = new Map<string, Promise<Buffer | null>>()
 
 let discoveredSources: readonly AssetSource[] = []
 let activeSource: AssetSource | null = null
+let vanillaCacheRoot = join(homedir(), '.framelens', 'vanilla-assets')
+let downloadClient: DownloadClient = createFetchDownloadClient()
+
+interface VanillaAssetResolution {
+  readonly status: VanillaAssetStatus
+  readonly jarPath: string | null
+  readonly message?: string
+}
+
+export interface DownloadClient {
+  getJson(url: string): Promise<JsonRecord>
+  getBuffer(url: string): Promise<Buffer>
+}
+
+export function setVanillaCacheRoot(rootPath: string): void {
+  vanillaCacheRoot = rootPath
+}
+
+export function setDownloadClientForTests(client: DownloadClient): void {
+  downloadClient = client
+}
 
 export async function scanAssetSources(): Promise<AssetScanResult> {
-  discoveredSources = await discoverAssetSources()
-
-  if (!activeSource && discoveredSources.length > 0) {
-    activeSource = discoveredSources[0] ?? null
-  }
-
-  if (activeSource && !discoveredSources.some((source) => source.id === activeSource?.id)) {
-    activeSource = discoveredSources[0] ?? null
-  }
-
   return {
     sources: discoveredSources.map(toSummary),
     activeSourceId: activeSource?.id ?? null
@@ -54,10 +66,6 @@ export async function scanAssetSources(): Promise<AssetScanResult> {
 }
 
 export async function activateAssetSource(sourceId: string): Promise<AssetActivationResult> {
-  if (discoveredSources.length === 0) {
-    discoveredSources = await discoverAssetSources()
-  }
-
   const source = discoveredSources.find((candidate) => candidate.id === sourceId)
   if (!source) {
     return {
@@ -95,10 +103,6 @@ export async function activateAssetRootPath(rootPath: string): Promise<AssetActi
 }
 
 export async function resolveBlockAssets(blocks: readonly BlockAssetRequest[]): Promise<ResolvedBlockAssetsResult> {
-  if (!activeSource && discoveredSources.length === 0) {
-    await scanAssetSources()
-  }
-
   const uniqueBlocks = new Map<string, BlockAssetRequest>()
   for (const block of blocks) {
     uniqueBlocks.set(createBlockAssetKey(block.blockName, block.properties), block)
@@ -114,39 +118,20 @@ export async function resolveBlockAssets(blocks: readonly BlockAssetRequest[]): 
   }
 }
 
-async function discoverAssetSources(): Promise<readonly AssetSource[]> {
-  const candidates = uniquePaths([
-    join(homedir(), 'Documents', 'astralis'),
-    join(homedir(), 'Documents', 'Astralis'),
-    join(homedir(), 'Library', 'Application Support', 'minecraft')
-  ])
-
-  const sources: AssetSource[] = []
-  for (const candidate of candidates) {
-    if (!(await pathExists(candidate))) {
-      continue
-    }
-
-    const source = await inspectAssetSource(candidate)
-    if (source) {
-      sources.push(source)
-    }
-  }
-
-  return sources.sort((a, b) => Number(b.name.toLowerCase().includes('astralis')) - Number(a.name.toLowerCase().includes('astralis')))
-}
-
 async function inspectAssetSource(rootPath: string): Promise<AssetSource | null> {
   const minecraftVersion = await readMinecraftVersion(rootPath)
-  const archivePaths = await findAssetArchives(rootPath)
+  const instanceArchivePaths = await findAssetArchives(rootPath)
   const looseAssetRoots = await findLooseAssetRoots(rootPath)
-  const hasVanillaJar = archivePaths.some((archivePath) => /[/\\]versions[/\\][^/\\]+[/\\][^/\\]+\.jar$/i.test(archivePath))
+  const vanillaAssets = await ensureVanillaAssets(minecraftVersion)
+  const archivePaths = uniquePaths(vanillaAssets.jarPath ? [...instanceArchivePaths, vanillaAssets.jarPath] : instanceArchivePaths)
+  const hasVanillaJar =
+    vanillaAssets.jarPath !== null || archivePaths.some((archivePath) => /[/\\]versions[/\\][^/\\]+[/\\][^/\\]+\.jar$/i.test(archivePath))
 
   if (archivePaths.length === 0 && looseAssetRoots.length === 0) {
     return null
   }
 
-  return {
+  const source: AssetSource = {
     id: pathToFileURL(rootPath).href,
     name: basename(rootPath) || rootPath,
     rootPath,
@@ -155,9 +140,15 @@ async function inspectAssetSource(rootPath: string): Promise<AssetSource | null>
     archiveCount: archivePaths.length,
     looseAssetRootCount: looseAssetRoots.length,
     hasVanillaJar,
+    vanillaStatus: vanillaAssets.status,
     archivePaths,
     looseAssetRoots
   }
+  if (vanillaAssets.message) {
+    return { ...source, vanillaMessage: vanillaAssets.message }
+  }
+
+  return source
 }
 
 async function readMinecraftVersion(rootPath: string): Promise<string | null> {
@@ -167,10 +158,85 @@ async function readMinecraftVersion(rootPath: string): Promise<string | null> {
   if (directVersion) {
     return directVersion
   }
+  const nestedVersion = getString(asRecord(instanceJson?.baseModLoader)?.minecraftVersion)
+  if (nestedVersion) {
+    return nestedVersion
+  }
+
+  const configVersion = await readInstanceConfigVersion(join(rootPath, 'instance.cfg'))
+  if (configVersion) {
+    return configVersion
+  }
 
   const versionsPath = join(rootPath, 'versions')
   const versionDirs = await safeReaddir(versionsPath)
   return versionDirs.find((entry) => entry.isDirectory())?.name ?? null
+}
+
+async function readInstanceConfigVersion(filePath: string): Promise<string | null> {
+  try {
+    const lines = (await readFile(filePath, 'utf8')).split(/\r?\n/)
+    for (const line of lines) {
+      const [key, value] = line.split('=')
+      if ((key === 'IntendedVersion' || key === 'MinecraftVersion') && value) {
+        return value.trim() || null
+      }
+    }
+  } catch {
+    return null
+  }
+
+  return null
+}
+
+async function ensureVanillaAssets(minecraftVersion: string | null): Promise<VanillaAssetResolution> {
+  if (!minecraftVersion) {
+    return {
+      status: 'missing-version',
+      jarPath: null,
+      message: 'Minecraft version could not be detected.'
+    }
+  }
+
+  const versionDirectory = join(vanillaCacheRoot, sanitizePathSegment(minecraftVersion))
+  const jarPath = join(versionDirectory, `${sanitizePathSegment(minecraftVersion)}.jar`)
+  if (await pathExists(jarPath)) {
+    return { status: 'cached', jarPath }
+  }
+
+  try {
+    await mkdir(versionDirectory, { recursive: true })
+    const manifest = await downloadClient.getJson(VERSION_MANIFEST_URL)
+    const versions = Array.isArray(manifest.versions) ? manifest.versions : []
+    const versionEntry = versions.map(asRecord).find((entry) => getString(entry?.id) === minecraftVersion)
+    const versionUrl = getString(versionEntry?.url)
+    if (!versionUrl) {
+      return {
+        status: 'failed',
+        jarPath: null,
+        message: `Minecraft ${minecraftVersion} was not found in Mojang's version manifest.`
+      }
+    }
+
+    const versionJson = await downloadClient.getJson(versionUrl)
+    const clientUrl = getString(asRecord(asRecord(versionJson.downloads)?.client)?.url)
+    if (!clientUrl) {
+      return {
+        status: 'failed',
+        jarPath: null,
+        message: `Minecraft ${minecraftVersion} does not expose a client download.`
+      }
+    }
+
+    await writeFile(jarPath, await downloadClient.getBuffer(clientUrl))
+    return { status: 'downloaded', jarPath }
+  } catch (error) {
+    return {
+      status: 'failed',
+      jarPath: null,
+      message: error instanceof Error ? error.message : 'Vanilla asset download failed.'
+    }
+  }
 }
 
 async function findAssetArchives(rootPath: string): Promise<readonly string[]> {
@@ -417,10 +483,7 @@ function orderArchivesForAsset(archivePaths: readonly string[], assetPath: strin
 
 function archiveNamespaceScore(archivePath: string, namespace: string): number {
   const name = basename(archivePath).toLowerCase()
-  if (name.includes(namespace)) return 0
-  if (archivePath.includes(`${sep}resourcepacks${sep}`)) return 1
-  if (archivePath.includes(`${sep}versions${sep}`)) return 2
-  return 3
+  return archivePriority(archivePath) * 10 + (name.includes(namespace) ? 0 : 1)
 }
 
 async function loadArchive(archivePath: string): Promise<ArchiveCache | null> {
@@ -479,7 +542,7 @@ function getFallbackColor(blockName: string): string {
 }
 
 function toSummary(source: AssetSource): AssetSourceSummary {
-  return {
+  const summary: AssetSourceSummary = {
     id: source.id,
     name: source.name,
     rootPath: source.rootPath,
@@ -487,8 +550,14 @@ function toSummary(source: AssetSource): AssetSourceSummary {
     minecraftVersion: source.minecraftVersion,
     archiveCount: source.archiveCount,
     looseAssetRootCount: source.looseAssetRootCount,
-    hasVanillaJar: source.hasVanillaJar
+    hasVanillaJar: source.hasVanillaJar,
+    vanillaStatus: source.vanillaStatus
   }
+  if (source.vanillaMessage) {
+    return { ...summary, vanillaMessage: source.vanillaMessage }
+  }
+
+  return summary
 }
 
 function inferSourceKind(rootPath: string): AssetSourceKind {
@@ -504,14 +573,15 @@ function inferSourceKind(rootPath: string): AssetSourceKind {
 }
 
 function prioritizeArchives(a: string, b: string): number {
-  const score = (archivePath: string): number => {
-    if (archivePath.includes(`${sep}resourcepacks${sep}`)) return 0
-    if (archivePath.includes(`${sep}versions${sep}`)) return 1
-    if (archivePath.includes(`${sep}mods${sep}`)) return 2
-    return 3
-  }
+  return archivePriority(a) - archivePriority(b) || a.localeCompare(b)
+}
 
-  return score(a) - score(b) || a.localeCompare(b)
+function archivePriority(archivePath: string): number {
+  if (archivePath.includes(`${sep}resourcepacks${sep}`)) return 0
+  if (archivePath.includes(`${sep}mods${sep}`)) return 1
+  if (archivePath.includes(`${sep}versions${sep}`)) return 2
+  if (archivePath.startsWith(vanillaCacheRoot)) return 3
+  return 4
 }
 
 async function findFiles(rootPath: string, predicate: (filePath: string) => boolean, maxDepth: number): Promise<string[]> {
@@ -606,4 +676,29 @@ function getString(value: unknown): string | null {
 
 function uniquePaths(paths: readonly string[]): string[] {
   return [...new Set(paths)]
+}
+
+function sanitizePathSegment(value: string): string {
+  return value.replace(/[^a-zA-Z0-9._-]/g, '_')
+}
+
+function createFetchDownloadClient(): DownloadClient {
+  return {
+    async getJson(url) {
+      const response = await fetch(url)
+      if (!response.ok) {
+        throw new Error(`Request failed with ${response.status} for ${url}`)
+      }
+
+      return (await response.json()) as JsonRecord
+    },
+    async getBuffer(url) {
+      const response = await fetch(url)
+      if (!response.ok) {
+        throw new Error(`Request failed with ${response.status} for ${url}`)
+      }
+
+      return Buffer.from(await response.arrayBuffer())
+    }
+  }
 }

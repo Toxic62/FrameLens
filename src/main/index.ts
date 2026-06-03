@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { readFile } from 'node:fs/promises'
 import {
   ACTIVATE_ASSET_SOURCE_CHANNEL,
+  CHOOSE_INSTANCE_FOLDER_CHANNEL,
   GET_CURRENT_STRUCTURE_CHANNEL,
   OPEN_STRUCTURE_CHANNEL,
   RESOLVE_BLOCK_ASSETS_CHANNEL,
@@ -11,8 +12,8 @@ import {
 } from '@shared/ipc'
 import type { LoadedStructure, OpenStructureResult } from '@shared/structure'
 import { loadStructureFile, toOpenStructureError } from './structure/structureLoader'
-import { activateAssetSource, resolveBlockAssets, scanAssetSources } from './assets/assetService'
-import type { BlockAssetRequest } from '@shared/assets'
+import { activateAssetRootPath, activateAssetSource, resolveBlockAssets, scanAssetSources, setVanillaCacheRoot } from './assets/assetService'
+import type { AssetActivationResult, BlockAssetRequest } from '@shared/assets'
 
 let currentStructure: LoadedStructure | null = null
 let currentFilePath: string | null = null
@@ -80,8 +81,25 @@ function getCurrentStructure(): LoadedStructure | null {
   return currentStructure
 }
 
+async function chooseInstanceFolder(): Promise<AssetActivationResult> {
+  const result = await dialog.showOpenDialog({
+    title: 'Choose Minecraft instance folder',
+    properties: ['openDirectory']
+  })
+
+  if (result.canceled || result.filePaths.length === 0) {
+    return { ok: false, source: null, cancelled: true }
+  }
+
+  const folderPath = result.filePaths[0]
+  return folderPath
+    ? activateAssetRootPath(folderPath)
+    : { ok: false, source: null, cancelled: true }
+}
+
 app.whenReady().then(() => {
   electronApp.setAppUserModelId('com.framelens.app')
+  setVanillaCacheRoot(join(app.getPath('userData'), 'vanilla-assets'))
 
   app.on('browser-window-created', (_, window) => {
     optimizer.watchWindowShortcuts(window)
@@ -90,6 +108,7 @@ app.whenReady().then(() => {
   ipcMain.handle(OPEN_STRUCTURE_CHANNEL, openStructureFile)
   ipcMain.handle(GET_CURRENT_STRUCTURE_CHANNEL, getCurrentStructure)
   ipcMain.handle(SCAN_ASSET_SOURCES_CHANNEL, scanAssetSources)
+  ipcMain.handle(CHOOSE_INSTANCE_FOLDER_CHANNEL, chooseInstanceFolder)
   ipcMain.handle(ACTIVATE_ASSET_SOURCE_CHANNEL, (_, sourceId: string) => activateAssetSource(sourceId))
   ipcMain.handle(RESOLVE_BLOCK_ASSETS_CHANNEL, (_, blocks: readonly BlockAssetRequest[]) => resolveBlockAssets(blocks))
   createWindow()

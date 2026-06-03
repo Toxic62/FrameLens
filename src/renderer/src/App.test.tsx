@@ -93,6 +93,7 @@ function createApiMock({ currentStructure, openStructureFile = vi.fn() }: ApiMoc
     openStructureFile,
     getCurrentStructure: vi.fn().mockResolvedValue(currentStructure),
     scanAssetSources: vi.fn().mockResolvedValue({ sources: [], activeSourceId: null }),
+    chooseInstanceFolder: vi.fn().mockResolvedValue({ ok: false, source: null, cancelled: true }),
     activateAssetSource: vi.fn(),
     resolveBlockAssets: vi.fn().mockResolvedValue({ activeSource: null, assets: {} })
   }

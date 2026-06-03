@@ -5,6 +5,7 @@ export interface FrameLensApi {
   openStructureFile(): Promise<OpenStructureResult>
   getCurrentStructure(): Promise<LoadedStructure | null>
   scanAssetSources(): Promise<AssetScanResult>
+  chooseInstanceFolder(): Promise<AssetActivationResult>
   activateAssetSource(sourceId: string): Promise<AssetActivationResult>
   resolveBlockAssets(blocks: readonly BlockAssetRequest[]): Promise<ResolvedBlockAssetsResult>
 }

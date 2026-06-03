@@ -30,7 +30,7 @@ export default function App(): ReactElement {
   const [viewportCommand, setViewportCommand] = useState<ViewportCommand | null>(null)
   const [renderMode, setRenderMode] = useState<RenderMode>('debug')
   const [assetScan, setAssetScan] = useState<AssetScanResult>({ sources: [], activeSourceId: null })
-  const [assetStatus, setAssetStatus] = useState('Scanning assets...')
+  const [assetStatus, setAssetStatus] = useState('Choose an instance folder for textured rendering.')
   const [blockAssets, setBlockAssets] = useState<Readonly<Record<string, ResolvedBlockAsset>>>({})
 
   useEffect(() => {
@@ -67,15 +67,15 @@ export default function App(): ReactElement {
         setAssetScan(scan)
         if (scan.activeSourceId) {
           const source = scan.sources.find((candidate) => candidate.id === scan.activeSourceId)
-          setAssetStatus(source ? `Using ${source.name}` : 'Asset source selected.')
+          setAssetStatus(source ? formatAssetStatus(source) : 'Asset source selected.')
           setRenderMode('textured')
         } else {
-          setAssetStatus('No local Minecraft asset source found.')
+          setAssetStatus('Choose an instance folder for textured rendering.')
         }
       })
       .catch(() => {
         if (isMounted) {
-          setAssetStatus('Asset scan failed.')
+          setAssetStatus('Choose an instance folder for textured rendering.')
         }
       })
 
@@ -235,21 +235,26 @@ export default function App(): ReactElement {
     setViewportCommand({ type, id: Date.now() })
   }
 
-  async function handleAssetSourceChange(sourceId: string): Promise<void> {
-    setAssetStatus('Switching asset source...')
-    const result = await window.frameLens.activateAssetSource(sourceId)
-    if (!result.ok || !result.source) {
-      setAssetStatus(result.message ?? 'Unable to activate asset source.')
+  async function handleChooseInstanceFolder(): Promise<void> {
+    setAssetStatus('Selecting instance and preparing vanilla assets...')
+    const result = await window.frameLens.chooseInstanceFolder()
+    if (result.cancelled) {
+      setAssetStatus(activeAssetSource ? formatAssetStatus(activeAssetSource) : 'Choose an instance folder for textured rendering.')
       return
     }
-    const source = result.source
 
+    if (!result.ok || !result.source) {
+      setAssetStatus(result.message ?? 'Unable to use that instance folder.')
+      return
+    }
+
+    const source = result.source
     setAssetScan((current) => ({
       sources: mergeAssetSources(current.sources, source),
       activeSourceId: source.id
     }))
     setRenderMode('textured')
-    setAssetStatus(`Using ${source.name}`)
+    setAssetStatus(formatAssetStatus(source))
   }
 
   return (
@@ -314,26 +319,16 @@ export default function App(): ReactElement {
               <div className="panel-heading">
                 <h2 id="assets-title">Assets</h2>
               </div>
-              {assetScan.sources.length > 0 ? (
-                <select
-                  className="select-input"
-                  value={assetScan.activeSourceId ?? ''}
-                  onChange={(event) => void handleAssetSourceChange(event.target.value)}
-                >
-                  {assetScan.sources.map((source) => (
-                    <option key={source.id} value={source.id}>
-                      {formatAssetSourceLabel(source)}
-                    </option>
-                  ))}
-                </select>
-              ) : (
-                <p className="state-copy compact">No asset source found.</p>
-              )}
+              <button className="tool-button full-width" type="button" onClick={() => void handleChooseInstanceFolder()}>
+                <FolderOpen aria-hidden="true" size={16} />
+                <span>{activeAssetSource ? 'Change instance' : 'Choose instance'}</span>
+              </button>
               <p className="state-copy compact">{assetStatus}</p>
               {activeAssetSource && (
                 <dl className="metadata-grid compact-grid">
+                  <Metadata label="Instance" value={formatAssetSourceLabel(activeAssetSource)} />
                   <Metadata label="Version" value={activeAssetSource.minecraftVersion ?? 'Unknown'} />
-                  <Metadata label="Vanilla jar" value={activeAssetSource.hasVanillaJar ? 'Found' : 'Missing'} />
+                  <Metadata label="Vanilla" value={formatVanillaStatus(activeAssetSource)} />
                   <Metadata label="Archives" value={activeAssetSource.archiveCount.toLocaleString()} />
                   <Metadata label="Loose roots" value={activeAssetSource.looseAssetRootCount.toLocaleString()} />
                   <Metadata label="Textured" value={assetStats.textured.toLocaleString()} />
@@ -565,6 +560,34 @@ function formatDimensions(dimensions: StructureDimensions): string {
 function formatAssetSourceLabel(source: AssetSourceSummary): string {
   const version = source.minecraftVersion ? ` ${source.minecraftVersion}` : ''
   return `${source.name}${version}`
+}
+
+function formatAssetStatus(source: AssetSourceSummary): string {
+  if (source.vanillaStatus === 'failed') {
+    return `Using ${source.name}. ${source.vanillaMessage ?? 'Vanilla assets are unavailable.'}`
+  }
+
+  if (source.vanillaStatus === 'missing-version') {
+    return `Using ${source.name}. Minecraft version was not detected.`
+  }
+
+  return `Using ${source.name} with ${formatVanillaStatus(source).toLowerCase()} vanilla assets.`
+}
+
+function formatVanillaStatus(source: AssetSourceSummary): string {
+  if (source.vanillaStatus === 'downloaded') {
+    return 'Downloaded'
+  }
+
+  if (source.vanillaStatus === 'cached') {
+    return 'Cached'
+  }
+
+  if (source.vanillaStatus === 'failed') {
+    return 'Failed'
+  }
+
+  return source.hasVanillaJar ? 'Found' : 'Missing'
 }
 
 function getUniqueBlockAssetRequests(blocks: readonly RenderableBlock[]): readonly BlockAssetRequest[] {

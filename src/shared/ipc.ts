@@ -1,5 +1,6 @@
 export const OPEN_STRUCTURE_CHANNEL = 'structure:open-file'
 export const GET_CURRENT_STRUCTURE_CHANNEL = 'structure:get-current'
 export const SCAN_ASSET_SOURCES_CHANNEL = 'assets:scan-sources'
+export const CHOOSE_INSTANCE_FOLDER_CHANNEL = 'assets:choose-instance-folder'
 export const ACTIVATE_ASSET_SOURCE_CHANNEL = 'assets:activate-source'
 export const RESOLVE_BLOCK_ASSETS_CHANNEL = 'assets:resolve-blocks'

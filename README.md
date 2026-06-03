@@ -28,8 +28,10 @@ Milestone 1 intentionally does not bundle Minecraft assets, load textures/models
 
 ## Milestone 3
 
-- Read-only discovery of local Minecraft asset sources, including the Astralis instance under `~/Documents/astralis` when present.
+- Manual selection of a local Minecraft instance folder for read-only asset access.
 - Asset providers for loose `assets/` folders, resource pack zips, version jars, and mod jars as archive data only.
+- Minecraft version detection from instance metadata such as `minecraftinstance.json`, Prism/MultiMC `instance.cfg`, or launcher `versions/` folders.
+- On-demand vanilla client asset caching for the detected Minecraft version through Mojang's public version manifest.
 - Model and texture resolution for simple blockstate/model chains.
 - No mod code is loaded or executed.
 
@@ -63,6 +65,8 @@ npm run dev
 
 On macOS, you can also double-click `launch-framelens.command` in this folder. It bootstraps a local Node runtime if needed, installs dependencies if missing, and launches the app.
 
+Open a structure with **Open .nbt**. For textured rendering, use **Choose instance** in the Assets panel and select the root folder of the Minecraft instance you want FrameLens to read from. FrameLens reads loose `assets/` folders, resource pack archives, and mod jars as data; if it can detect the Minecraft version, it downloads the matching vanilla client jar into the app's local cache outside the repository and uses it as the final fallback asset provider.
+
 Run validation:
 
 ```bash
@@ -73,4 +77,4 @@ npm run build
 
 ## Safety Boundaries
 
-FrameLens does not ship Minecraft assets and does not execute mod code. Structure files and asset archives are parsed as data only.
+FrameLens does not ship Minecraft assets and does not execute mod code. Structure files and asset archives are parsed as data only. Filesystem access, folder picking, asset archive reads, and vanilla asset downloads stay in Electron main/preload rather than React.

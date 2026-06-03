@@ -213,6 +213,10 @@ h1 {
   border-color: #6bc59f;
 }
 
+.full-width {
+  width: 100%;
+}
+
 .text-button {
   min-height: 28px;
   padding: 0 10px;
