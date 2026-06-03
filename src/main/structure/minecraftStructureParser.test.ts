@@ -28,7 +28,7 @@ describe('parseMinecraftStructure', () => {
       entityCount: 1
     })
     expect(structure.dimensions).toEqual({ x: 2, y: 1, z: 1 })
-    expect(structure.blocks).toEqual([{ position: [1, 0, 0], state: 1, name: 'minecraft:stone' }])
+    expect(structure.blocks).toEqual([{ position: [1, 0, 0], state: 1, name: 'minecraft:stone', properties: {} }])
     expect(structure.entities).toEqual([{ id: 'minecraft:item' }])
   })
 

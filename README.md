@@ -26,6 +26,20 @@ Milestone 1 intentionally does not bundle Minecraft assets, load textures/models
 - Searchable palette panel and entity list.
 - Structure summary with dimensions, total blocks, non-air blocks, visible blocks, palette count, and entity count.
 
+## Milestone 3
+
+- Read-only discovery of local Minecraft asset sources, including the Astralis instance under `~/Documents/astralis` when present.
+- Asset providers for loose `assets/` folders, resource pack zips, version jars, and mod jars as archive data only.
+- Model and texture resolution for simple blockstate/model chains.
+- No mod code is loaded or executed.
+
+## Milestone 4
+
+- Render modes for debug cubes, palette-colored cubes, and textured cubes.
+- Textured rendering for supported full-cube block models using locally resolved PNG textures.
+- Per-block fallback colors when models or textures are missing or unsupported.
+- Clipping and visible-block selection work across render modes.
+
 ## Architecture Notes
 
 - Filesystem access lives in Electron main and is exposed to the renderer through a narrow preload API.
@@ -47,6 +61,8 @@ Run the desktop app:
 npm run dev
 ```
 
+On macOS, you can also double-click `launch-framelens.command` in this folder. It bootstraps a local Node runtime if needed, installs dependencies if missing, and launches the app.
+
 Run validation:
 
 ```bash
@@ -57,4 +73,4 @@ npm run build
 
 ## Safety Boundaries
 
-FrameLens does not ship Minecraft assets and does not execute mod code. Structure files are parsed as data only.
+FrameLens does not ship Minecraft assets and does not execute mod code. Structure files and asset archives are parsed as data only.

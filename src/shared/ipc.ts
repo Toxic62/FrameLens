@@ -1,2 +1,5 @@
 export const OPEN_STRUCTURE_CHANNEL = 'structure:open-file'
 export const GET_CURRENT_STRUCTURE_CHANNEL = 'structure:get-current'
+export const SCAN_ASSET_SOURCES_CHANNEL = 'assets:scan-sources'
+export const ACTIVATE_ASSET_SOURCE_CHANNEL = 'assets:activate-source'
+export const RESOLVE_BLOCK_ASSETS_CHANNEL = 'assets:resolve-blocks'

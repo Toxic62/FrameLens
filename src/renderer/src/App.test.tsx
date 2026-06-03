@@ -3,7 +3,7 @@ import '@testing-library/jest-dom/vitest'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
-import type { LoadedStructure } from '@shared/structure'
+import type { LoadedStructure, OpenStructureResult } from '@shared/structure'
 
 const { viewportSpy } = vi.hoisted(() => ({
   viewportSpy: vi.fn()
@@ -26,10 +26,7 @@ describe('App', () => {
   })
 
   it('renders the empty structure state', () => {
-    window.frameLens = {
-      openStructureFile: vi.fn(),
-      getCurrentStructure: vi.fn().mockResolvedValue(null)
-    }
+    window.frameLens = createApiMock({ currentStructure: null })
 
     render(<App />)
 
@@ -38,10 +35,7 @@ describe('App', () => {
   })
 
   it('restores the current structure from the preload API', async () => {
-    window.frameLens = {
-      openStructureFile: vi.fn(),
-      getCurrentStructure: vi.fn().mockResolvedValue(createStructure())
-    }
+    window.frameLens = createApiMock({ currentStructure: createStructure() })
 
     render(<App />)
 
@@ -52,17 +46,16 @@ describe('App', () => {
   })
 
   it('passes only visible blocks to the viewport when clipping changes', async () => {
-    window.frameLens = {
-      openStructureFile: vi.fn(),
-      getCurrentStructure: vi.fn().mockResolvedValue({
+    window.frameLens = createApiMock({
+      currentStructure: {
         ...createStructure(),
         dimensions: { x: 2, y: 1, z: 1 },
         blocks: [
-          { position: [0, 0, 0], state: 0, name: 'minecraft:stone' },
-          { position: [1, 0, 0], state: 0, name: 'minecraft:stone' }
+          { position: [0, 0, 0], state: 0, name: 'minecraft:stone', properties: {} },
+          { position: [1, 0, 0], state: 0, name: 'minecraft:stone', properties: {} }
         ]
-      })
-    }
+      }
+    })
 
     render(<App />)
 
@@ -75,10 +68,10 @@ describe('App', () => {
 
   it('keeps the current structure visible when opening is cancelled', async () => {
     const openStructureFile = vi.fn().mockResolvedValue({ ok: false, reason: 'cancelled' })
-    window.frameLens = {
+    window.frameLens = createApiMock({
+      currentStructure: createStructure(),
       openStructureFile,
-      getCurrentStructure: vi.fn().mockResolvedValue(createStructure())
-    }
+    })
 
     render(<App />)
 
@@ -89,6 +82,21 @@ describe('App', () => {
     expect(screen.getByText('restored.nbt')).toBeInTheDocument()
   })
 })
+
+interface ApiMockOptions {
+  readonly currentStructure: LoadedStructure | null
+  readonly openStructureFile?: () => Promise<OpenStructureResult>
+}
+
+function createApiMock({ currentStructure, openStructureFile = vi.fn() }: ApiMockOptions): Window['frameLens'] {
+  return {
+    openStructureFile,
+    getCurrentStructure: vi.fn().mockResolvedValue(currentStructure),
+    scanAssetSources: vi.fn().mockResolvedValue({ sources: [], activeSourceId: null }),
+    activateAssetSource: vi.fn(),
+    resolveBlockAssets: vi.fn().mockResolvedValue({ activeSource: null, assets: {} })
+  }
+}
 
 function createStructure(): LoadedStructure {
   return {
@@ -101,7 +109,7 @@ function createStructure(): LoadedStructure {
     },
     dimensions: { x: 1, y: 1, z: 1 },
     palette: [{ index: 0, name: 'minecraft:stone', properties: {} }],
-    blocks: [{ position: [0, 0, 0], state: 0, name: 'minecraft:stone' }],
+    blocks: [{ position: [0, 0, 0], state: 0, name: 'minecraft:stone', properties: {} }],
     entities: []
   }
 }

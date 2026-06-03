@@ -104,7 +104,8 @@ function readBlocks(value: NbtValue, palette: readonly PaletteEntry[]): Renderab
     return {
       position: readPosition(record.pos, `blocks[${index}].pos`),
       state,
-      name: paletteEntry.name
+      name: paletteEntry.name,
+      properties: paletteEntry.properties
     }
   })
 }

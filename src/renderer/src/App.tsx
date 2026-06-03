@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { ReactElement } from 'react'
-import { Crosshair, FolderOpen, Maximize2, RotateCcw } from 'lucide-react'
+import { Box, Crosshair, FolderOpen, Image, Maximize2, Palette, RotateCcw } from 'lucide-react'
+import { createBlockAssetKey } from '@shared/assets'
+import type { AssetScanResult, AssetSourceSummary, BlockAssetRequest, RenderMode, ResolvedBlockAsset } from '@shared/assets'
 import type { LoadedStructure, OpenStructureResult, RenderableBlock, StructureDimensions } from '@shared/structure'
 import {
   createDefaultClipBounds,
@@ -26,6 +28,10 @@ export default function App(): ReactElement {
   const [selectedBlockKey, setSelectedBlockKey] = useState<string | null>(null)
   const [paletteSearch, setPaletteSearch] = useState('')
   const [viewportCommand, setViewportCommand] = useState<ViewportCommand | null>(null)
+  const [renderMode, setRenderMode] = useState<RenderMode>('debug')
+  const [assetScan, setAssetScan] = useState<AssetScanResult>({ sources: [], activeSourceId: null })
+  const [assetStatus, setAssetStatus] = useState('Scanning assets...')
+  const [blockAssets, setBlockAssets] = useState<Readonly<Record<string, ResolvedBlockAsset>>>({})
 
   useEffect(() => {
     let isMounted = true
@@ -40,6 +46,36 @@ export default function App(): ReactElement {
       .catch(() => {
         if (isMounted) {
           setLoadState(initialState)
+        }
+      })
+
+    return () => {
+      isMounted = false
+    }
+  }, [])
+
+  useEffect(() => {
+    let isMounted = true
+
+    window.frameLens
+      .scanAssetSources()
+      .then((scan) => {
+        if (!isMounted) {
+          return
+        }
+
+        setAssetScan(scan)
+        if (scan.activeSourceId) {
+          const source = scan.sources.find((candidate) => candidate.id === scan.activeSourceId)
+          setAssetStatus(source ? `Using ${source.name}` : 'Asset source selected.')
+          setRenderMode('textured')
+        } else {
+          setAssetStatus('No local Minecraft asset source found.')
+        }
+      })
+      .catch(() => {
+        if (isMounted) {
+          setAssetStatus('Asset scan failed.')
         }
       })
 
@@ -96,6 +132,17 @@ export default function App(): ReactElement {
 
     return structure.palette.filter((entry) => entry.name.toLowerCase().includes(search))
   }, [paletteSearch, structure])
+  const activeAssetSource = useMemo(
+    () => assetScan.sources.find((source) => source.id === assetScan.activeSourceId),
+    [assetScan]
+  )
+  const assetStats = useMemo(() => {
+    const values = Object.values(blockAssets)
+    return {
+      textured: values.filter((asset) => asset.status === 'textured-cube').length,
+      fallback: values.filter((asset) => asset.status === 'fallback').length
+    }
+  }, [blockAssets])
 
   useEffect(() => {
     if (structure) {
@@ -107,6 +154,43 @@ export default function App(): ReactElement {
       setSelectedBlockKey(null)
     }
   }, [structure])
+
+  useEffect(() => {
+    let isMounted = true
+    const blockRequests = structure ? getUniqueBlockAssetRequests(structure.blocks) : []
+
+    if (!structure || !assetScan.activeSourceId || blockRequests.length === 0) {
+      setBlockAssets({})
+      return undefined
+    }
+
+    setAssetStatus('Resolving block textures...')
+    window.frameLens
+      .resolveBlockAssets(blockRequests)
+      .then((result) => {
+        if (!isMounted) {
+          return
+        }
+
+        setBlockAssets(result.assets)
+        const texturedCount = Object.values(result.assets).filter((asset) => asset.status === 'textured-cube').length
+        setAssetStatus(
+          result.activeSource
+            ? `${texturedCount}/${blockRequests.length} block textures resolved from ${result.activeSource.name}`
+            : 'No asset source selected.'
+        )
+      })
+      .catch(() => {
+        if (isMounted) {
+          setBlockAssets({})
+          setAssetStatus('Texture resolution failed.')
+        }
+      })
+
+    return () => {
+      isMounted = false
+    }
+  }, [assetScan.activeSourceId, structure])
 
   useEffect(() => {
     if (selectedBlockKey !== null && !selectedBlock) {
@@ -149,6 +233,23 @@ export default function App(): ReactElement {
 
   function sendViewportCommand(type: ViewportCommand['type']): void {
     setViewportCommand({ type, id: Date.now() })
+  }
+
+  async function handleAssetSourceChange(sourceId: string): Promise<void> {
+    setAssetStatus('Switching asset source...')
+    const result = await window.frameLens.activateAssetSource(sourceId)
+    if (!result.ok || !result.source) {
+      setAssetStatus(result.message ?? 'Unable to activate asset source.')
+      return
+    }
+    const source = result.source
+
+    setAssetScan((current) => ({
+      sources: mergeAssetSources(current.sources, source),
+      activeSourceId: source.id
+    }))
+    setRenderMode('textured')
+    setAssetStatus(`Using ${source.name}`)
   }
 
   return (
@@ -202,6 +303,43 @@ export default function App(): ReactElement {
                   <span>Reset</span>
                 </button>
               </div>
+              <div className="segmented-control" aria-label="Render mode">
+                <RenderModeButton mode="debug" currentMode={renderMode} onClick={setRenderMode} />
+                <RenderModeButton mode="palette" currentMode={renderMode} onClick={setRenderMode} />
+                <RenderModeButton mode="textured" currentMode={renderMode} onClick={setRenderMode} />
+              </div>
+            </section>
+
+            <section className="panel" aria-labelledby="assets-title">
+              <div className="panel-heading">
+                <h2 id="assets-title">Assets</h2>
+              </div>
+              {assetScan.sources.length > 0 ? (
+                <select
+                  className="select-input"
+                  value={assetScan.activeSourceId ?? ''}
+                  onChange={(event) => void handleAssetSourceChange(event.target.value)}
+                >
+                  {assetScan.sources.map((source) => (
+                    <option key={source.id} value={source.id}>
+                      {formatAssetSourceLabel(source)}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <p className="state-copy compact">No asset source found.</p>
+              )}
+              <p className="state-copy compact">{assetStatus}</p>
+              {activeAssetSource && (
+                <dl className="metadata-grid compact-grid">
+                  <Metadata label="Version" value={activeAssetSource.minecraftVersion ?? 'Unknown'} />
+                  <Metadata label="Vanilla jar" value={activeAssetSource.hasVanillaJar ? 'Found' : 'Missing'} />
+                  <Metadata label="Archives" value={activeAssetSource.archiveCount.toLocaleString()} />
+                  <Metadata label="Loose roots" value={activeAssetSource.looseAssetRootCount.toLocaleString()} />
+                  <Metadata label="Textured" value={assetStats.textured.toLocaleString()} />
+                  <Metadata label="Fallback" value={assetStats.fallback.toLocaleString()} />
+                </dl>
+              )}
             </section>
 
             {clipBounds && (
@@ -276,6 +414,8 @@ export default function App(): ReactElement {
           structure={structure}
           visibleBlocks={visibleBlocks}
           selectedBlockKey={selectedBlockKey}
+          renderMode={renderMode}
+          blockAssets={blockAssets}
           viewportCommand={viewportCommand}
           onSelectBlock={handleSelectBlock}
         />
@@ -378,6 +518,29 @@ function SelectedBlockDetails({ block, structure }: SelectedBlockDetailsProps): 
   )
 }
 
+interface RenderModeButtonProps {
+  readonly mode: RenderMode
+  readonly currentMode: RenderMode
+  readonly onClick: (mode: RenderMode) => void
+}
+
+function RenderModeButton({ mode, currentMode, onClick }: RenderModeButtonProps): ReactElement {
+  const label = mode === 'debug' ? 'Debug' : mode === 'palette' ? 'Palette' : 'Textured'
+  const Icon = mode === 'debug' ? Box : mode === 'palette' ? Palette : Image
+
+  return (
+    <button
+      className="segment-button"
+      type="button"
+      aria-pressed={mode === currentMode}
+      onClick={() => onClick(mode)}
+    >
+      <Icon aria-hidden="true" size={15} />
+      <span>{label}</span>
+    </button>
+  )
+}
+
 function formatBytes(bytes: number): string {
   if (bytes < 1024) {
     return `${bytes} B`
@@ -397,4 +560,29 @@ function formatBytes(bytes: number): string {
 
 function formatDimensions(dimensions: StructureDimensions): string {
   return `${dimensions.x} x ${dimensions.y} x ${dimensions.z}`
+}
+
+function formatAssetSourceLabel(source: AssetSourceSummary): string {
+  const version = source.minecraftVersion ? ` ${source.minecraftVersion}` : ''
+  return `${source.name}${version}`
+}
+
+function getUniqueBlockAssetRequests(blocks: readonly RenderableBlock[]): readonly BlockAssetRequest[] {
+  const requests = new Map<string, BlockAssetRequest>()
+  for (const block of blocks) {
+    requests.set(createBlockAssetKey(block.name, block.properties), {
+      blockName: block.name,
+      properties: block.properties
+    })
+  }
+
+  return [...requests.values()]
+}
+
+function mergeAssetSources(
+  sources: readonly AssetSourceSummary[],
+  source: AssetSourceSummary
+): readonly AssetSourceSummary[] {
+  const others = sources.filter((candidate) => candidate.id !== source.id)
+  return [source, ...others]
 }

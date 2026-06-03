@@ -16,6 +16,7 @@ export interface RenderableBlock {
   readonly position: BlockPosition
   readonly state: number
   readonly name: string
+  readonly properties: Readonly<Record<string, string>>
 }
 
 export interface EntitySummary {

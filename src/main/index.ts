@@ -2,9 +2,17 @@ import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import { electronApp, is, optimizer } from '@electron-toolkit/utils'
 import { join } from 'node:path'
 import { readFile } from 'node:fs/promises'
-import { GET_CURRENT_STRUCTURE_CHANNEL, OPEN_STRUCTURE_CHANNEL } from '@shared/ipc'
+import {
+  ACTIVATE_ASSET_SOURCE_CHANNEL,
+  GET_CURRENT_STRUCTURE_CHANNEL,
+  OPEN_STRUCTURE_CHANNEL,
+  RESOLVE_BLOCK_ASSETS_CHANNEL,
+  SCAN_ASSET_SOURCES_CHANNEL
+} from '@shared/ipc'
 import type { LoadedStructure, OpenStructureResult } from '@shared/structure'
 import { loadStructureFile, toOpenStructureError } from './structure/structureLoader'
+import { activateAssetSource, resolveBlockAssets, scanAssetSources } from './assets/assetService'
+import type { BlockAssetRequest } from '@shared/assets'
 
 let currentStructure: LoadedStructure | null = null
 let currentFilePath: string | null = null
@@ -81,6 +89,9 @@ app.whenReady().then(() => {
 
   ipcMain.handle(OPEN_STRUCTURE_CHANNEL, openStructureFile)
   ipcMain.handle(GET_CURRENT_STRUCTURE_CHANNEL, getCurrentStructure)
+  ipcMain.handle(SCAN_ASSET_SOURCES_CHANNEL, scanAssetSources)
+  ipcMain.handle(ACTIVATE_ASSET_SOURCE_CHANNEL, (_, sourceId: string) => activateAssetSource(sourceId))
+  ipcMain.handle(RESOLVE_BLOCK_ASSETS_CHANNEL, (_, blocks: readonly BlockAssetRequest[]) => resolveBlockAssets(blocks))
   createWindow()
 
   app.on('activate', () => {

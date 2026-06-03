@@ -3,9 +3,9 @@ import type { RenderableBlock } from './structure'
 import { createDefaultClipBounds, getBlockKey, getVisibleBlocks, isBlockVisible } from './viewer'
 
 const blocks: readonly RenderableBlock[] = [
-  { position: [0, 0, 0], state: 0, name: 'minecraft:stone' },
-  { position: [1, 0, 0], state: 1, name: 'minecraft:dirt' },
-  { position: [2, 1, 2], state: 2, name: 'minecraft:glass' }
+  { position: [0, 0, 0], state: 0, name: 'minecraft:stone', properties: {} },
+  { position: [1, 0, 0], state: 1, name: 'minecraft:dirt', properties: {} },
+  { position: [2, 1, 2], state: 2, name: 'minecraft:glass', properties: {} }
 ]
 
 describe('viewer clipping', () => {
