@@ -8,6 +8,7 @@ import {
   GridHelper,
   InstancedMesh,
   Matrix4,
+  Mesh,
   MeshLambertMaterial,
   NearestFilter,
   PerspectiveCamera,
@@ -23,7 +24,7 @@ import {
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { createBlockAssetKey } from '@shared/assets'
 import type { BlockFaceTextures, BlockModelElement, ModelUv, RenderMode, ResolvedBlockAsset } from '@shared/assets'
-import type { LoadedStructure, RenderableBlock, StructureDimensions } from '@shared/structure'
+import type { BlockPosition, LoadedStructure, RenderableBlock, StructureDimensions } from '@shared/structure'
 import { getBlockKey } from '@shared/viewer'
 
 export interface ViewportCommand {
@@ -36,6 +37,7 @@ interface StructureViewportProps {
   readonly visibleBlocks: readonly RenderableBlock[]
   readonly selectedBlockKey: string | null
   readonly highlightedBlockKeys: readonly string[]
+  readonly placementPreviewPosition: BlockPosition | null
   readonly renderMode: RenderMode
   readonly blockAssets: Readonly<Record<string, ResolvedBlockAsset>>
   readonly viewportCommand: ViewportCommand | null
@@ -53,6 +55,7 @@ interface ViewportState {
   readonly renderer: WebGLRenderer
   readonly controls: OrbitControls
   blockMeshes: readonly BlockMeshRecord[]
+  placementPreviewMesh: Mesh | null
   structureDimensions: StructureDimensions
   renderPaused: boolean
 }
@@ -98,6 +101,7 @@ export function StructureViewport({
   visibleBlocks,
   selectedBlockKey,
   highlightedBlockKeys,
+  placementPreviewPosition,
   renderMode,
   blockAssets,
   viewportCommand,
@@ -155,6 +159,7 @@ export function StructureViewport({
       renderer,
       controls,
       blockMeshes: [],
+      placementPreviewMesh: null,
       structureDimensions: DEFAULT_DIMENSIONS,
       renderPaused: false
     }
@@ -234,6 +239,7 @@ export function StructureViewport({
       renderer.domElement.removeEventListener('webglcontextlost', handleContextLost)
       renderer.domElement.removeEventListener('webglcontextrestored', handleContextRestored)
       removeBlocks(viewportRef.current)
+      removePlacementPreview(viewportRef.current)
       controls.dispose()
       renderer.dispose()
       renderer.domElement.remove()
@@ -249,7 +255,8 @@ export function StructureViewport({
 
     viewport.structureDimensions = structure?.dimensions ?? DEFAULT_DIMENSIONS
     updateBlocks(viewport, { visibleBlocks, selectedBlockKey, highlightedBlockKeys: new Set(highlightedBlockKeys), renderMode, blockAssets })
-  }, [blockAssets, highlightedBlockKeys, renderMode, selectedBlockKey, structure, visibleBlocks])
+    updatePlacementPreview(viewport, structure ? placementPreviewPosition : null)
+  }, [blockAssets, highlightedBlockKeys, placementPreviewPosition, renderMode, selectedBlockKey, structure, visibleBlocks])
 
   useEffect(() => {
     const viewport = viewportRef.current
@@ -258,7 +265,7 @@ export function StructureViewport({
     }
 
     frameCamera(viewport, structure.dimensions)
-  }, [structure])
+  }, [structure?.metadata.fileName, structure?.dimensions.x, structure?.dimensions.y, structure?.dimensions.z])
 
   useEffect(() => {
     const viewport = viewportRef.current
@@ -526,6 +533,40 @@ function removeBlocks(viewport: ViewportState | null): void {
   }
 
   viewport.blockMeshes = []
+}
+
+function updatePlacementPreview(viewport: ViewportState, position: BlockPosition | null): void {
+  removePlacementPreview(viewport)
+  if (!position) {
+    return
+  }
+
+  const material = new MeshLambertMaterial({
+    color: SELECTED_BLOCK_TINT,
+    transparent: true,
+    opacity: 0.42,
+    depthWrite: false
+  })
+  const mesh = new Mesh(new BoxGeometry(1.04, 1.04, 1.04), material)
+  mesh.position.set(position[0] + 0.5, position[1] + 0.5, position[2] + 0.5)
+  viewport.scene.add(mesh)
+  viewport.placementPreviewMesh = mesh
+}
+
+function removePlacementPreview(viewport: ViewportState | null): void {
+  if (!viewport?.placementPreviewMesh) {
+    return
+  }
+
+  viewport.scene.remove(viewport.placementPreviewMesh)
+  viewport.placementPreviewMesh.geometry.dispose()
+  const materials = Array.isArray(viewport.placementPreviewMesh.material)
+    ? viewport.placementPreviewMesh.material
+    : [viewport.placementPreviewMesh.material]
+  for (const material of materials) {
+    material.dispose()
+  }
+  viewport.placementPreviewMesh = null
 }
 
 function frameCamera(viewport: ViewportState, dimensions: StructureDimensions): void {

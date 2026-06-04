@@ -456,7 +456,8 @@ h1 {
 }
 
 .block-group-list {
-  max-height: 260px;
+  max-height: none;
+  overflow: visible;
 }
 
 .block-group-list li {
@@ -477,6 +478,14 @@ h1 {
   grid-template-columns: 28px minmax(0, 1fr) auto;
   gap: 6px;
   align-items: center;
+}
+
+.block-group-row > .list-button {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.block-group-row > .list-button .list-secondary {
+  grid-column: 1 / -1;
 }
 
 .block-instance-list {
@@ -511,9 +520,21 @@ h1 {
 
 .list-primary {
   min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   overflow-wrap: anywhere;
   color: #e8edf2;
   font-size: 0.84rem;
+}
+
+.list-secondary {
+  min-width: 0;
+  overflow: hidden;
+  color: #91a0ad;
+  font-size: 0.75rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .compact {
@@ -551,6 +572,16 @@ h1 {
   background: rgb(10 13 16 / 68%);
 }
 
+.placement-layer {
+  position: fixed;
+  inset: auto 0 0;
+  z-index: 22;
+  display: flex;
+  justify-content: center;
+  padding: 0 16px 16px;
+  pointer-events: none;
+}
+
 .editor-modal {
   display: grid;
   gap: 14px;
@@ -562,6 +593,20 @@ h1 {
   padding: 18px;
   background: #171b20;
   box-shadow: 0 18px 48px rgb(0 0 0 / 42%);
+}
+
+.placement-panel {
+  display: grid;
+  gap: 12px;
+  width: min(980px, 100%);
+  max-height: min(430px, calc(100vh - 80px));
+  overflow: auto;
+  border: 1px solid #45535e;
+  border-radius: 8px;
+  padding: 14px;
+  background: #171b20;
+  box-shadow: 0 18px 48px rgb(0 0 0 / 48%);
+  pointer-events: auto;
 }
 
 .modal-heading {
@@ -603,6 +648,17 @@ h1 {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
+}
+
+.placement-grid {
+  display: grid;
+  grid-template-columns: minmax(180px, 1.4fr) minmax(180px, 0.9fr) minmax(220px, 1.2fr);
+  gap: 10px;
+  align-items: end;
+}
+
+.placement-block-field {
+  min-width: 0;
 }
 
 .nudge-grid {
@@ -653,5 +709,13 @@ h1 {
 
   .nudge-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .placement-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .placement-layer {
+    padding: 0 10px 10px;
   }
 }

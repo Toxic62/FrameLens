@@ -22,7 +22,7 @@ import {
 } from 'lucide-react'
 import { createBlockAssetKey } from '@shared/assets'
 import type { AssetScanResult, AssetSourceSummary, BlockAssetRequest, RenderMode, ResolvedBlockAsset } from '@shared/assets'
-import type { BlockEntityKind, LoadedStructure, OpenStructureResult, RenderableBlock, StructureDimensions } from '@shared/structure'
+import type { BlockEntityKind, BlockPosition, LoadedStructure, OpenStructureResult, RenderableBlock, StructureDimensions } from '@shared/structure'
 import {
   createDefaultClipBounds,
   getBlockKey,
@@ -525,6 +525,10 @@ export default function App(): ReactElement {
     }
   }
 
+  function updatePlacementPosition(position: BlockPosition): void {
+    setPlacementDialog((current) => current ? { ...current, position: [...position] as [number, number, number] } : current)
+  }
+
   return (
     <main className="app-shell">
       <header className="app-toolbar" aria-label="Application toolbar">
@@ -702,6 +706,7 @@ export default function App(): ReactElement {
           visibleBlocks={visibleBlocks}
           selectedBlockKey={selectedBlockKey}
           highlightedBlockKeys={highlightedBlockKeys}
+          placementPreviewPosition={placementDialog?.position ?? null}
           renderMode={renderMode}
           blockAssets={blockAssets}
           viewportCommand={viewportCommand}
@@ -723,6 +728,7 @@ export default function App(): ReactElement {
           dialog={placementDialog}
           structure={structure}
           onClose={() => setPlacementDialog(null)}
+          onPositionChange={updatePlacementPosition}
           onApply={applyPlacedBlock}
         />
       )}
@@ -816,6 +822,8 @@ function ClipAxisControl({ axis, label, dimensions, bounds, onChange }: ClipAxis
 interface BlockGroup {
   readonly key: string
   readonly label: string
+  readonly detail: string | null
+  readonly title: string
   readonly blocks: readonly RenderableBlock[]
 }
 
@@ -868,9 +876,11 @@ function BlockGroupList({
                 type="button"
                 aria-pressed={selectedGroupKey === group.key}
                 onClick={() => onSelectGroup(group.key)}
+                title={group.title}
               >
                 <span className="list-primary">{group.label}</span>
                 <span className="list-count">{group.blocks.length.toLocaleString()}</span>
+                {group.detail && <span className="list-secondary">{group.detail}</span>}
               </button>
               <BlockRowActions
                 disabledProperties={!hasEditableProperties}
@@ -1151,11 +1161,12 @@ interface PlacementModalProps {
   readonly dialog: PlacementDialog
   readonly structure: LoadedStructure
   readonly onClose: () => void
+  readonly onPositionChange: (position: BlockPosition) => void
   readonly onApply: (block: RenderableBlock, mode: PlacementDialog['mode']) => void
 }
 
-function PlacementModal({ dialog, structure, onClose, onApply }: PlacementModalProps): ReactElement {
-  const [position, setPosition] = useState<[number, number, number]>(dialog.position)
+function PlacementModal({ dialog, structure, onClose, onPositionChange, onApply }: PlacementModalProps): ReactElement {
+  const position = dialog.position
   const [blockName, setBlockName] = useState(dialog.sourceBlock?.name ?? 'minecraft:stone')
   const [facing, setFacing] = useState(dialog.sourceBlock?.properties.facing ?? 'north')
   const [orientation, setOrientation] = useState(dialog.sourceBlock?.properties.orientation ?? 'north_up')
@@ -1170,11 +1181,9 @@ function PlacementModal({ dialog, structure, onClose, onApply }: PlacementModalP
   const title = dialog.mode === 'add' ? 'Add block' : 'Transform block'
 
   function setAxis(axis: 0 | 1 | 2, value: number): void {
-    setPosition((current) => {
-      const next: [number, number, number] = [...current]
-      next[axis] = clampInteger(value, 0, axis === 0 ? structure.dimensions.x - 1 : axis === 1 ? structure.dimensions.y - 1 : structure.dimensions.z - 1)
-      return next
-    })
+    const next: [number, number, number] = [...position]
+    next[axis] = clampInteger(value, 0, axis === 0 ? structure.dimensions.x - 1 : axis === 1 ? structure.dimensions.y - 1 : structure.dimensions.z - 1)
+    onPositionChange(next)
   }
 
   function apply(): void {
@@ -1212,40 +1221,45 @@ function PlacementModal({ dialog, structure, onClose, onApply }: PlacementModalP
   }
 
   return (
-    <div className="modal-layer" role="dialog" aria-modal="true" aria-label={title}>
-      <div className="editor-modal">
+    <div className="placement-layer" role="dialog" aria-modal="true" aria-label={title}>
+      <div className="placement-panel">
         <div className="modal-heading">
-          <h2>{title}</h2>
+          <div>
+            <p className="eyebrow">Placement {position.join(', ')}</p>
+            <h2>{title}</h2>
+          </div>
           <button className="icon-button" type="button" onClick={onClose} aria-label="Close placement">
             <X aria-hidden="true" size={16} />
           </button>
         </div>
-        <label className="field-label">
-          <span>Block</span>
-          <input className="search-input" value={blockName} onChange={(event) => setBlockName(event.target.value)} />
-        </label>
-        <div className="coordinate-grid">
-          {(['X', 'Y', 'Z'] as const).map((label, index) => (
-            <label className="field-label" key={label}>
-              <span>{label}</span>
-              <input
-                className="search-input compact-input"
-                type="number"
-                min={0}
-                max={index === 0 ? structure.dimensions.x - 1 : index === 1 ? structure.dimensions.y - 1 : structure.dimensions.z - 1}
-                value={position[index]}
-                onChange={(event) => setAxis(index as 0 | 1 | 2, Number(event.target.value))}
-              />
-            </label>
-          ))}
-        </div>
-        <div className="nudge-grid" aria-label="Coordinate nudges">
-          <button className="tool-button" type="button" onClick={() => setAxis(0, position[0] - 1)}>-X</button>
-          <button className="tool-button" type="button" onClick={() => setAxis(0, position[0] + 1)}>+X</button>
-          <button className="tool-button" type="button" onClick={() => setAxis(1, position[1] - 1)}>-Y</button>
-          <button className="tool-button" type="button" onClick={() => setAxis(1, position[1] + 1)}>+Y</button>
-          <button className="tool-button" type="button" onClick={() => setAxis(2, position[2] - 1)}>-Z</button>
-          <button className="tool-button" type="button" onClick={() => setAxis(2, position[2] + 1)}>+Z</button>
+        <div className="placement-grid">
+          <label className="field-label placement-block-field">
+            <span>Block</span>
+            <input className="search-input" value={blockName} onChange={(event) => setBlockName(event.target.value)} />
+          </label>
+          <div className="coordinate-grid">
+            {(['X', 'Y', 'Z'] as const).map((label, index) => (
+              <label className="field-label" key={label}>
+                <span>{label}</span>
+                <input
+                  className="search-input compact-input"
+                  type="number"
+                  min={0}
+                  max={index === 0 ? structure.dimensions.x - 1 : index === 1 ? structure.dimensions.y - 1 : structure.dimensions.z - 1}
+                  value={position[index]}
+                  onChange={(event) => setAxis(index as 0 | 1 | 2, Number(event.target.value))}
+                />
+              </label>
+            ))}
+          </div>
+          <div className="nudge-grid" aria-label="Coordinate nudges">
+            <button className="tool-button" type="button" onClick={() => setAxis(0, position[0] - 1)}>-X</button>
+            <button className="tool-button" type="button" onClick={() => setAxis(0, position[0] + 1)}>+X</button>
+            <button className="tool-button" type="button" onClick={() => setAxis(1, position[1] - 1)}>-Y</button>
+            <button className="tool-button" type="button" onClick={() => setAxis(1, position[1] + 1)}>+Y</button>
+            <button className="tool-button" type="button" onClick={() => setAxis(2, position[2] - 1)}>-Z</button>
+            <button className="tool-button" type="button" onClick={() => setAxis(2, position[2] + 1)}>+Z</button>
+          </div>
         </div>
         {supportsFacing && (
           <label className="field-label">
@@ -1403,7 +1417,9 @@ function groupStructureBlocks(blocks: readonly RenderableBlock[]): readonly Bloc
   return [...groups.entries()]
     .map(([key, groupBlocks]) => ({
       key,
-      label: formatBlockLabel(groupBlocks[0] ?? key),
+      label: formatCompactBlockLabel(groupBlocks[0] ?? key),
+      detail: typeof groupBlocks[0] === 'object' ? formatCompactPropertySummary(groupBlocks[0].properties) : null,
+      title: formatBlockLabel(groupBlocks[0] ?? key),
       blocks: groupBlocks.sort((left, right) => getBlockKey(left.position).localeCompare(getBlockKey(right.position)))
     }))
     .sort((left, right) => right.blocks.length - left.blocks.length || left.label.localeCompare(right.label))
@@ -1440,6 +1456,25 @@ function formatBlockLabel(block: RenderableBlock | string): string {
   }
 
   return `${block.name} [${properties.map(([key, value]) => `${key}=${value}`).join(', ')}]`
+}
+
+function formatCompactBlockLabel(block: RenderableBlock | string): string {
+  const blockName = typeof block === 'string' ? block.split('[')[0] ?? block : block.name
+  return blockName.split(':').at(-1) ?? blockName
+}
+
+function formatCompactPropertySummary(properties: Readonly<Record<string, string>>): string | null {
+  const entries = Object.entries(properties)
+  if (entries.length === 0) {
+    return null
+  }
+
+  const [firstKey, firstValue] = entries[0] ?? []
+  if (!firstKey || firstValue === undefined) {
+    return null
+  }
+
+  return entries.length === 1 ? `${firstKey}=${firstValue}` : `${firstKey}=${firstValue} +${entries.length - 1}`
 }
 
 function getSharedPropertyValue(blocks: readonly RenderableBlock[], propertyName: string): string {

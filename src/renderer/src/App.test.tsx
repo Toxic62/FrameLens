@@ -42,7 +42,7 @@ describe('App', () => {
     expect(await screen.findByText('restored.nbt')).toBeInTheDocument()
     expect(screen.getByText('1 x 1 x 1')).toBeInTheDocument()
     expect(screen.getByText('Visible')).toBeInTheDocument()
-    expect(screen.getByText('minecraft:stone')).toBeInTheDocument()
+    expect(screen.getByText('stone')).toBeInTheDocument()
   })
 
   it('passes only visible blocks to the viewport when clipping changes', async () => {
@@ -128,7 +128,8 @@ describe('App', () => {
     render(<App />)
 
     expect(await screen.findByText('jigsaw.nbt')).toBeInTheDocument()
-    fireEvent.click(screen.getByText('minecraft:jigsaw [orientation=north_up]'))
+    fireEvent.click(screen.getByText('jigsaw').closest('button')!)
+    expect(screen.getByText('orientation=north_up')).toBeInTheDocument()
 
     await waitFor(() => {
       const lastProps = viewportSpy.mock.calls.at(-1)?.[0] as { highlightedBlockKeys: readonly string[] }
