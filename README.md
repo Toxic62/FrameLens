@@ -42,11 +42,21 @@ Milestone 1 intentionally does not bundle Minecraft assets, load textures/models
 - Per-block fallback colors when models or textures are missing or unsupported.
 - Clipping and visible-block selection work across render modes.
 
+## Milestone 5
+
+- Parses simple block entity NBT from structure blocks and exposes editable string/number fields in the inspector.
+- Jigsaw block entities expose name, target, pool, final state, joint, and priority fields for in-memory editing.
+- Container-like block entities expose loot table and loot seed fields for in-memory editing.
+- Block properties can be edited from known option lists for common Minecraft properties such as facing, orientation, axis, slab type, stair shape, waterlogged, level, and rotation.
+- The block list is hidden by default, groups matching blocks together, can highlight a whole group in the viewport, and can expand to select an individual block for editing.
+- Textured rendering consumes simple Minecraft model elements, so slab and stair-style blocks render as multiple cuboids instead of always as full cubes.
+
 ## Architecture Notes
 
 - Filesystem access lives in Electron main and is exposed to the renderer through a narrow preload API.
 - React components consume normalized FrameLens structure data only.
 - NBT parsing is kept out of React and isolated behind `src/main/structure/minecraftStructureParser.ts`.
+- Milestone 5 edits are currently in-memory only; structure exporting remains a later milestone.
 - Placeholder interfaces exist for later instance scanning, asset providers, model resolvers, texture resolvers, and structure exporting.
 
 ## Development

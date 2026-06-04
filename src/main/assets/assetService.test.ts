@@ -157,6 +157,60 @@ describe('assetService', () => {
       status: 'textured-cube'
     })
     expect(result.assets['custom:machine']?.faces?.north).toBe(`data:image/png;base64,${PNG_1X1.toString('base64')}`)
+    expect(result.assets['custom:machine']?.elements).toEqual([
+      {
+        from: [0, 0, 0],
+        to: [16, 16, 16],
+        faces: {
+          up: `data:image/png;base64,${PNG_1X1.toString('base64')}`,
+          down: `data:image/png;base64,${PNG_1X1.toString('base64')}`,
+          north: `data:image/png;base64,${PNG_1X1.toString('base64')}`,
+          south: `data:image/png;base64,${PNG_1X1.toString('base64')}`,
+          east: `data:image/png;base64,${PNG_1X1.toString('base64')}`,
+          west: `data:image/png;base64,${PNG_1X1.toString('base64')}`
+        }
+      }
+    ])
+  })
+
+  it('preserves slab-like model element bounds for non-full-cube rendering', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'framelens-slab-assets-'))
+    await mkdir(join(root, 'kubejs', 'assets', 'custom', 'blockstates'), { recursive: true })
+    await mkdir(join(root, 'kubejs', 'assets', 'custom', 'models', 'block'), { recursive: true })
+    await mkdir(join(root, 'kubejs', 'assets', 'custom', 'textures', 'block'), { recursive: true })
+    await writeFile(
+      join(root, 'kubejs', 'assets', 'custom', 'blockstates', 'half_block.json'),
+      JSON.stringify({ variants: { 'type=bottom': { model: 'custom:block/half_block' } } })
+    )
+    await writeFile(
+      join(root, 'kubejs', 'assets', 'custom', 'models', 'block', 'half_block.json'),
+      JSON.stringify({
+        textures: { all: 'custom:block/half_block' },
+        elements: [
+          {
+            from: [0, 0, 0],
+            to: [16, 8, 16],
+            faces: {
+              down: { texture: '#all' },
+              up: { texture: '#all' },
+              north: { texture: '#all' },
+              south: { texture: '#all' },
+              west: { texture: '#all' },
+              east: { texture: '#all' }
+            }
+          }
+        ]
+      })
+    )
+    await writeFile(join(root, 'kubejs', 'assets', 'custom', 'textures', 'block', 'half_block.png'), PNG_1X1)
+
+    await activateAssetRootPath(root)
+    const result = await resolveBlockAssets([{ blockName: 'custom:half_block', properties: { type: 'bottom' } }])
+
+    expect(result.assets['custom:half_block[type=bottom]']).toMatchObject({
+      status: 'textured-cube',
+      elements: [{ from: [0, 0, 0], to: [16, 8, 16] }]
+    })
   })
 
   it.runIf(process.env.CI !== 'true')(

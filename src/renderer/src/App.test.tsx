@@ -81,6 +81,78 @@ describe('App', () => {
     await waitFor(() => expect(openStructureFile).toHaveBeenCalledOnce())
     expect(screen.getByText('restored.nbt')).toBeInTheDocument()
   })
+
+  it('highlights grouped blocks and edits an expanded block entry', async () => {
+    window.frameLens = createApiMock({
+      currentStructure: {
+        metadata: {
+          fileName: 'jigsaw.nbt',
+          byteSize: 256,
+          paletteCount: 1,
+          blockCount: 2,
+          blockEntityCount: 2,
+          entityCount: 0
+        },
+        dimensions: { x: 2, y: 1, z: 1 },
+        palette: [{ index: 0, name: 'minecraft:jigsaw', properties: { orientation: 'north_up' } }],
+        blocks: [
+          {
+            position: [0, 0, 0],
+            state: 0,
+            name: 'minecraft:jigsaw',
+            properties: { orientation: 'north_up' },
+            blockEntity: {
+              id: 'minecraft:jigsaw',
+              kind: 'jigsaw',
+              position: [0, 0, 0],
+              fields: { name: 'minecraft:start', target: 'minecraft:target', pool: 'minecraft:pool', final_state: 'minecraft:air', joint: 'rollable' }
+            }
+          },
+          {
+            position: [1, 0, 0],
+            state: 0,
+            name: 'minecraft:jigsaw',
+            properties: { orientation: 'north_up' },
+            blockEntity: {
+              id: 'minecraft:jigsaw',
+              kind: 'jigsaw',
+              position: [1, 0, 0],
+              fields: { name: 'minecraft:start', target: 'minecraft:target', pool: 'minecraft:pool', final_state: 'minecraft:air', joint: 'rollable' }
+            }
+          }
+        ],
+        entities: []
+      }
+    })
+
+    render(<App />)
+
+    expect(await screen.findByText('jigsaw.nbt')).toBeInTheDocument()
+    expect(screen.getByText('Grouped block list hidden.')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Show' }))
+    fireEvent.click(screen.getByText('minecraft:jigsaw [orientation=north_up]'))
+
+    await waitFor(() => {
+      const lastProps = viewportSpy.mock.calls.at(-1)?.[0] as { highlightedBlockKeys: readonly string[] }
+      expect(lastProps.highlightedBlockKeys).toHaveLength(2)
+    })
+
+    fireEvent.click(screen.getAllByLabelText('Expand group')[0]!)
+    fireEvent.click(screen.getAllByText('0, 0, 0')[0]!.closest('button')!)
+
+    const orientationSelect = screen
+      .getAllByRole('combobox')
+      .find((element): element is HTMLSelectElement => element instanceof HTMLSelectElement && element.value === 'north_up')
+    expect(orientationSelect).toBeDefined()
+    expect(screen.getByRole('option', { name: 'south_up' })).toBeInTheDocument()
+
+    expect(screen.getByDisplayValue('minecraft:air')).toBeInTheDocument()
+
+    await waitFor(() => {
+      const lastProps = viewportSpy.mock.calls.at(-1)?.[0] as { highlightedBlockKeys: readonly string[] }
+      expect(lastProps.highlightedBlockKeys).toEqual(['0,0,0'])
+    })
+  })
 })
 
 interface ApiMockOptions {
@@ -106,6 +178,7 @@ function createStructure(): LoadedStructure {
       byteSize: 128,
       paletteCount: 1,
       blockCount: 1,
+      blockEntityCount: 0,
       entityCount: 0
     },
     dimensions: { x: 1, y: 1, z: 1 },

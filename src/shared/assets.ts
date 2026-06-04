@@ -45,6 +45,14 @@ export interface BlockFaceTextures {
   readonly west: string
 }
 
+export type ModelCoordinate = readonly [x: number, y: number, z: number]
+
+export interface BlockModelElement {
+  readonly from: ModelCoordinate
+  readonly to: ModelCoordinate
+  readonly faces: BlockFaceTextures
+}
+
 export interface ResolvedBlockAsset {
   readonly assetKey: string
   readonly blockName: string
@@ -52,6 +60,7 @@ export interface ResolvedBlockAsset {
   readonly status: BlockAssetStatus
   readonly sourceName: string | null
   readonly faces: BlockFaceTextures | null
+  readonly elements: readonly BlockModelElement[]
   readonly fallbackColor: string
   readonly warning?: string
 }

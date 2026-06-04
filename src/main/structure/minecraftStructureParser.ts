@@ -1,5 +1,7 @@
 import nbt from 'prismarine-nbt'
 import type {
+  BlockEntityKind,
+  BlockEntitySummary,
   BlockPosition,
   EntitySummary,
   LoadedStructure,
@@ -49,6 +51,7 @@ export async function parseMinecraftStructure(input: ParseStructureInput): Promi
       byteSize: input.byteSize,
       paletteCount: palette.length,
       blockCount: allBlocks.length,
+      blockEntityCount: allBlocks.filter((block) => block.blockEntity !== undefined).length,
       entityCount: entities.length
     },
     dimensions,
@@ -101,13 +104,58 @@ function readBlocks(value: NbtValue, palette: readonly PaletteEntry[]): Renderab
       throw new StructureParseError(`Block ${index} references missing palette state ${state}.`)
     }
 
-    return {
+    const blockEntity = readBlockEntity(record.nbt, paletteEntry.name, readPosition(record.pos, `blocks[${index}].pos`))
+    const block = {
       position: readPosition(record.pos, `blocks[${index}].pos`),
       state,
       name: paletteEntry.name,
       properties: paletteEntry.properties
     }
+    return blockEntity ? { ...block, blockEntity } : block
   })
+}
+
+function readBlockEntity(value: NbtValue, blockName: string, position: BlockPosition): BlockEntitySummary | null {
+  if (value === undefined) {
+    return null
+  }
+
+  const record = asRecord(value, 'block nbt')
+  const id = typeof record.id === 'string' ? record.id : blockName
+  return {
+    id,
+    kind: inferBlockEntityKind(id, blockName, record),
+    position,
+    fields: readEditableBlockEntityFields(record)
+  }
+}
+
+function readEditableBlockEntityFields(record: NbtRecord): Record<string, string> {
+  const fields: Record<string, string> = {}
+  for (const [key, value] of Object.entries(record)) {
+    if (key === 'id' || key === 'x' || key === 'y' || key === 'z' || key === 'Items') {
+      continue
+    }
+
+    if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+      fields[key] = String(value)
+    }
+  }
+
+  return fields
+}
+
+function inferBlockEntityKind(id: string, blockName: string, record: NbtRecord): BlockEntityKind {
+  const normalized = `${id} ${blockName}`.toLowerCase()
+  if (normalized.includes('jigsaw')) {
+    return 'jigsaw'
+  }
+
+  if (record.LootTable !== undefined || /chest|barrel|shulker_box|dispenser|dropper/.test(normalized)) {
+    return 'container'
+  }
+
+  return 'generic'
 }
 
 function readEntities(value: NbtValue): EntitySummary[] {

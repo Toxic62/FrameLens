@@ -224,6 +224,45 @@ h1 {
   font-size: 0.82rem;
 }
 
+.icon-button {
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid #3b4852;
+  border-radius: 4px;
+  color: #dce6ee;
+  background: #20272d;
+  cursor: pointer;
+}
+
+.list-button {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 30px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: 4px 6px;
+  color: #e8edf2;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.list-button[aria-pressed="true"] {
+  border-color: #6bc59f;
+  background: #1d332a;
+}
+
+.list-count {
+  color: #91a0ad;
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+}
+
 .clip-control {
   display: grid;
   gap: 8px;
@@ -251,6 +290,11 @@ h1 {
 }
 
 .selection-details {
+  display: grid;
+  gap: 10px;
+}
+
+.block-entity-editor {
   display: grid;
   gap: 10px;
 }
@@ -315,6 +359,11 @@ h1 {
   font: inherit;
 }
 
+.compact-input {
+  min-height: 30px;
+  font-size: 0.84rem;
+}
+
 .search-input:focus {
   outline: 2px solid #6bc59f;
   outline-offset: 1px;
@@ -336,6 +385,42 @@ h1 {
   align-items: center;
   gap: 8px;
   min-height: 28px;
+}
+
+.block-group-list {
+  max-height: 260px;
+}
+
+.block-group-list li {
+  display: block;
+}
+
+.action-list li {
+  display: block;
+}
+
+.block-group-item {
+  display: grid;
+  gap: 4px;
+}
+
+.block-group-row {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: 6px;
+  align-items: center;
+}
+
+.block-instance-list {
+  display: grid;
+  gap: 3px;
+  margin: 0 0 0 34px;
+  padding: 0;
+  list-style: none;
+}
+
+.list-button.nested {
+  grid-template-columns: minmax(64px, auto) minmax(0, 1fr);
 }
 
 .list-index {

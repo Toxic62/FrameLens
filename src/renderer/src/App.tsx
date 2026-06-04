@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { ReactElement } from 'react'
-import { Box, Crosshair, FolderOpen, Image, Maximize2, Palette, RotateCcw } from 'lucide-react'
+import { Box, ChevronDown, ChevronRight, Crosshair, FolderOpen, Image, ListTree, Maximize2, Palette, RotateCcw } from 'lucide-react'
 import { createBlockAssetKey } from '@shared/assets'
 import type { AssetScanResult, AssetSourceSummary, BlockAssetRequest, RenderMode, ResolvedBlockAsset } from '@shared/assets'
 import type { LoadedStructure, OpenStructureResult, RenderableBlock, StructureDimensions } from '@shared/structure'
@@ -26,6 +26,9 @@ export default function App(): ReactElement {
   const [loadState, setLoadState] = useState<LoadState>(initialState)
   const [clipBounds, setClipBounds] = useState<ClipBounds | null>(null)
   const [selectedBlockKey, setSelectedBlockKey] = useState<string | null>(null)
+  const [selectedBlockGroupKey, setSelectedBlockGroupKey] = useState<string | null>(null)
+  const [showBlockList, setShowBlockList] = useState(false)
+  const [expandedBlockGroups, setExpandedBlockGroups] = useState<ReadonlySet<string>>(new Set())
   const [paletteSearch, setPaletteSearch] = useState('')
   const [viewportCommand, setViewportCommand] = useState<ViewportCommand | null>(null)
   const [renderMode, setRenderMode] = useState<RenderMode>('debug')
@@ -120,6 +123,18 @@ export default function App(): ReactElement {
 
     return structure.blocks.find((block) => getBlockKey(block.position) === selectedBlockKey && isBlockVisible(block, clipBounds))
   }, [clipBounds, selectedBlockKey, structure])
+  const blockGroups = useMemo(() => (structure ? groupStructureBlocks(structure.blocks) : []), [structure])
+  const highlightedBlockKeys = useMemo(() => {
+    if (!structure) {
+      return []
+    }
+
+    if (selectedBlockGroupKey) {
+      return blockGroups.find((group) => group.key === selectedBlockGroupKey)?.blocks.map((block) => getBlockKey(block.position)) ?? []
+    }
+
+    return selectedBlockKey ? [selectedBlockKey] : []
+  }, [blockGroups, selectedBlockGroupKey, selectedBlockKey, structure])
   const filteredPalette = useMemo(() => {
     if (!structure) {
       return []
@@ -148,10 +163,13 @@ export default function App(): ReactElement {
     if (structure) {
       setClipBounds(createDefaultClipBounds(structure.dimensions))
       setSelectedBlockKey(null)
+      setSelectedBlockGroupKey(null)
+      setExpandedBlockGroups(new Set())
       setPaletteSearch('')
     } else {
       setClipBounds(null)
       setSelectedBlockKey(null)
+      setSelectedBlockGroupKey(null)
     }
   }, [structure])
 
@@ -200,6 +218,29 @@ export default function App(): ReactElement {
 
   function handleSelectBlock(block: RenderableBlock | null): void {
     setSelectedBlockKey(block ? getBlockKey(block.position) : null)
+    setSelectedBlockGroupKey(null)
+  }
+
+  function handleSelectBlockGroup(groupKey: string): void {
+    setSelectedBlockGroupKey(groupKey)
+    setSelectedBlockKey(null)
+  }
+
+  function handleSelectBlockFromList(block: RenderableBlock): void {
+    setSelectedBlockKey(getBlockKey(block.position))
+    setSelectedBlockGroupKey(null)
+  }
+
+  function toggleBlockGroup(groupKey: string): void {
+    setExpandedBlockGroups((current) => {
+      const next = new Set(current)
+      if (next.has(groupKey)) {
+        next.delete(groupKey)
+      } else {
+        next.add(groupKey)
+      }
+      return next
+    })
   }
 
   function updateClipBound(axis: ClipAxis, edge: 'Min' | 'Max', value: number): void {
@@ -257,6 +298,55 @@ export default function App(): ReactElement {
     setAssetStatus(formatAssetStatus(source))
   }
 
+  function updateBlockProperty(blockKey: string, propertyName: string, value: string): void {
+    setLoadState((current) => {
+      if (current.status !== 'loaded') {
+        return current
+      }
+
+      return {
+        status: 'loaded',
+        structure: {
+          ...current.structure,
+          blocks: current.structure.blocks.map((block) =>
+            getBlockKey(block.position) === blockKey
+              ? { ...block, properties: { ...block.properties, [propertyName]: value } }
+              : block
+          )
+        }
+      }
+    })
+  }
+
+  function updateBlockEntityField(blockKey: string, fieldName: string, value: string): void {
+    setLoadState((current) => {
+      if (current.status !== 'loaded') {
+        return current
+      }
+
+      return {
+        status: 'loaded',
+        structure: {
+          ...current.structure,
+          blocks: current.structure.blocks.map((block) =>
+            getBlockKey(block.position) === blockKey && block.blockEntity
+              ? {
+                  ...block,
+                  blockEntity: {
+                    ...block.blockEntity,
+                    fields: {
+                      ...block.blockEntity.fields,
+                      [fieldName]: value
+                    }
+                  }
+                }
+              : block
+          )
+        }
+      }
+    })
+  }
+
   return (
     <main className="app-shell">
       <aside className="sidebar" aria-label="Structure metadata">
@@ -289,6 +379,7 @@ export default function App(): ReactElement {
                 <Metadata label="Palette" value={structure.metadata.paletteCount.toLocaleString()} />
                 <Metadata label="Blocks" value={structure.metadata.blockCount.toLocaleString()} />
                 <Metadata label="Non-air" value={structure.blocks.length.toLocaleString()} />
+                <Metadata label="Block entities" value={structure.metadata.blockEntityCount.toLocaleString()} />
                 <Metadata label="Visible" value={visibleBlocks.length.toLocaleString()} />
                 <Metadata label="Entities" value={structure.metadata.entityCount.toLocaleString()} />
               </dl>
@@ -356,10 +447,46 @@ export default function App(): ReactElement {
                 <h2 id="selected-block-title">Selection</h2>
               </div>
               {selectedBlock ? (
-                <SelectedBlockDetails block={selectedBlock} structure={structure} />
+                <SelectedBlockDetails
+                  block={selectedBlock}
+                  structure={structure}
+                  onPropertyChange={updateBlockProperty}
+                  onBlockEntityFieldChange={updateBlockEntityField}
+                />
               ) : (
-                <p className="state-copy compact">Select a visible block in the viewport.</p>
+                <p className="state-copy compact">
+                  {selectedBlockGroupKey ? 'Block group highlighted in the viewport.' : 'Select a visible block in the viewport.'}
+                </p>
               )}
+            </section>
+
+            <section className="panel" aria-labelledby="block-list-title">
+              <div className="panel-heading">
+                <h2 id="block-list-title">Blocks</h2>
+                <button className="text-button" type="button" onClick={() => setShowBlockList((current) => !current)}>
+                  {showBlockList ? 'Hide' : 'Show'}
+                </button>
+              </div>
+              {showBlockList ? (
+                <BlockGroupList
+                  groups={blockGroups}
+                  expandedGroups={expandedBlockGroups}
+                  selectedGroupKey={selectedBlockGroupKey}
+                  selectedBlockKey={selectedBlockKey}
+                  onToggleGroup={toggleBlockGroup}
+                  onSelectGroup={handleSelectBlockGroup}
+                  onSelectBlock={handleSelectBlockFromList}
+                />
+              ) : (
+                <p className="state-copy compact">Grouped block list hidden.</p>
+              )}
+            </section>
+
+            <section className="panel" aria-labelledby="block-entities-title">
+              <div className="panel-heading">
+                <h2 id="block-entities-title">Block Entities</h2>
+              </div>
+              <BlockEntityList blocks={structure.blocks} selectedBlockKey={selectedBlockKey} onSelectBlock={handleSelectBlockFromList} />
             </section>
 
             <section className="panel" aria-labelledby="palette-title">
@@ -409,6 +536,7 @@ export default function App(): ReactElement {
           structure={structure}
           visibleBlocks={visibleBlocks}
           selectedBlockKey={selectedBlockKey}
+          highlightedBlockKeys={highlightedBlockKeys}
           renderMode={renderMode}
           blockAssets={blockAssets}
           viewportCommand={viewportCommand}
@@ -478,14 +606,127 @@ function ClipAxisControl({ axis, label, dimensions, bounds, onChange }: ClipAxis
   )
 }
 
+interface BlockGroup {
+  readonly key: string
+  readonly label: string
+  readonly blocks: readonly RenderableBlock[]
+}
+
+interface BlockGroupListProps {
+  readonly groups: readonly BlockGroup[]
+  readonly expandedGroups: ReadonlySet<string>
+  readonly selectedGroupKey: string | null
+  readonly selectedBlockKey: string | null
+  readonly onToggleGroup: (groupKey: string) => void
+  readonly onSelectGroup: (groupKey: string) => void
+  readonly onSelectBlock: (block: RenderableBlock) => void
+}
+
+function BlockGroupList({
+  groups,
+  expandedGroups,
+  selectedGroupKey,
+  selectedBlockKey,
+  onToggleGroup,
+  onSelectGroup,
+  onSelectBlock
+}: BlockGroupListProps): ReactElement {
+  return (
+    <ol className="list-panel block-group-list">
+      {groups.map((group) => {
+        const isExpanded = expandedGroups.has(group.key)
+        return (
+          <li className="block-group-item" key={group.key}>
+            <div className="block-group-row">
+              <button className="icon-button" type="button" onClick={() => onToggleGroup(group.key)} aria-label={isExpanded ? 'Collapse group' : 'Expand group'}>
+                {isExpanded ? <ChevronDown aria-hidden="true" size={14} /> : <ChevronRight aria-hidden="true" size={14} />}
+              </button>
+              <button
+                className="list-button"
+                type="button"
+                aria-pressed={selectedGroupKey === group.key}
+                onClick={() => onSelectGroup(group.key)}
+              >
+                <span className="list-primary">{group.label}</span>
+                <span className="list-count">{group.blocks.length.toLocaleString()}</span>
+              </button>
+            </div>
+            {isExpanded && (
+              <ol className="block-instance-list">
+                {group.blocks.map((block) => {
+                  const blockKey = getBlockKey(block.position)
+                  return (
+                    <li key={blockKey}>
+                      <button
+                        className="list-button nested"
+                        type="button"
+                        aria-pressed={selectedBlockKey === blockKey}
+                        onClick={() => onSelectBlock(block)}
+                      >
+                        <span className="list-index">{block.position.join(', ')}</span>
+                        <span className="list-primary">{block.blockEntity ? `${block.blockEntity.id}` : 'Block'}</span>
+                      </button>
+                    </li>
+                  )
+                })}
+              </ol>
+            )}
+          </li>
+        )
+      })}
+    </ol>
+  )
+}
+
+interface BlockEntityListProps {
+  readonly blocks: readonly RenderableBlock[]
+  readonly selectedBlockKey: string | null
+  readonly onSelectBlock: (block: RenderableBlock) => void
+}
+
+function BlockEntityList({ blocks, selectedBlockKey, onSelectBlock }: BlockEntityListProps): ReactElement {
+  const blockEntityBlocks = blocks.filter((block) => block.blockEntity)
+  if (blockEntityBlocks.length === 0) {
+    return <p className="state-copy compact">No block entities.</p>
+  }
+
+  return (
+    <ol className="list-panel action-list">
+      {blockEntityBlocks.map((block) => {
+        const blockKey = getBlockKey(block.position)
+        return (
+          <li key={blockKey}>
+            <button
+              className="list-button nested"
+              type="button"
+              aria-pressed={selectedBlockKey === blockKey}
+              onClick={() => onSelectBlock(block)}
+            >
+              <span className="list-index">{block.position.join(', ')}</span>
+              <span className="list-primary">{block.blockEntity?.id ?? block.name}</span>
+            </button>
+          </li>
+        )
+      })}
+    </ol>
+  )
+}
+
 interface SelectedBlockDetailsProps {
   readonly block: RenderableBlock
   readonly structure: LoadedStructure
+  readonly onPropertyChange: (blockKey: string, propertyName: string, value: string) => void
+  readonly onBlockEntityFieldChange: (blockKey: string, fieldName: string, value: string) => void
 }
 
-function SelectedBlockDetails({ block, structure }: SelectedBlockDetailsProps): ReactElement {
-  const paletteEntry = structure.palette[block.state]
-  const properties = paletteEntry ? Object.entries(paletteEntry.properties) : []
+function SelectedBlockDetails({
+  block,
+  structure,
+  onPropertyChange,
+  onBlockEntityFieldChange
+}: SelectedBlockDetailsProps): ReactElement {
+  const properties = Object.entries(block.properties)
+  const blockKey = getBlockKey(block.position)
 
   return (
     <div className="selection-details">
@@ -496,18 +737,104 @@ function SelectedBlockDetails({ block, structure }: SelectedBlockDetailsProps): 
       <dl className="metadata-grid compact-grid">
         <Metadata label="Position" value={block.position.join(', ')} />
         <Metadata label="State" value={block.state.toString()} />
+        <Metadata label="Palette" value={structure.palette[block.state]?.name ?? block.name} />
       </dl>
       {properties.length > 0 ? (
         <dl className="property-grid">
           {properties.map(([key, value]) => (
             <div key={key}>
               <dt>{key}</dt>
-              <dd>{value}</dd>
+              <dd>
+                <PropertyValueEditor block={block} propertyName={key} value={value} onChange={(propertyName, nextValue) => onPropertyChange(blockKey, propertyName, nextValue)} />
+              </dd>
             </div>
           ))}
         </dl>
       ) : (
         <p className="state-copy compact">No palette properties.</p>
+      )}
+      {block.blockEntity && (
+        <BlockEntityEditor block={block} onFieldChange={(fieldName, nextValue) => onBlockEntityFieldChange(blockKey, fieldName, nextValue)} />
+      )}
+    </div>
+  )
+}
+
+interface PropertyValueEditorProps {
+  readonly block: RenderableBlock
+  readonly propertyName: string
+  readonly value: string
+  readonly onChange: (propertyName: string, value: string) => void
+}
+
+function PropertyValueEditor({ block, propertyName, value, onChange }: PropertyValueEditorProps): ReactElement {
+  const options = getPropertyOptions(block, propertyName, value)
+  const handleChange = (nextValue: string): void => onChange(propertyName, nextValue)
+  return (
+    <select
+      className="select-input compact-input"
+      value={value}
+      onChange={(event) => handleChange(event.currentTarget.value)}
+      onInput={(event) => handleChange(event.currentTarget.value)}
+    >
+      {options.map((option) => (
+        <option key={option} value={option}>
+          {option}
+        </option>
+      ))}
+    </select>
+  )
+}
+
+interface BlockEntityEditorProps {
+  readonly block: RenderableBlock
+  readonly onFieldChange: (fieldName: string, value: string) => void
+}
+
+function BlockEntityEditor({ block, onFieldChange }: BlockEntityEditorProps): ReactElement {
+  const blockEntity = block.blockEntity
+  if (!blockEntity) {
+    return <></>
+  }
+
+  const editableFields = getEditableBlockEntityFields(block)
+  return (
+    <div className="block-entity-editor">
+      <div className="selection-title">
+        <ListTree aria-hidden="true" size={16} />
+        <span>{blockEntity.id}</span>
+      </div>
+      {editableFields.length > 0 ? (
+        <dl className="property-grid">
+          {editableFields.map((field) => (
+            <div key={field.name}>
+              <dt>{field.label}</dt>
+              <dd>
+                {field.options ? (
+                  <select
+                    className="select-input compact-input"
+                    value={blockEntity.fields[field.name] ?? ''}
+                    onChange={(event) => onFieldChange(field.name, event.target.value)}
+                  >
+                    {field.options.map((option) => (
+                      <option key={option} value={option}>
+                        {option}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <input
+                    className="search-input compact-input"
+                    value={blockEntity.fields[field.name] ?? ''}
+                    onChange={(event) => onFieldChange(field.name, event.target.value)}
+                  />
+                )}
+              </dd>
+            </div>
+          ))}
+        </dl>
+      ) : (
+        <p className="state-copy compact">No simple editable block entity fields.</p>
       )}
     </div>
   )
@@ -588,6 +915,117 @@ function formatVanillaStatus(source: AssetSourceSummary): string {
   }
 
   return source.hasVanillaJar ? 'Found' : 'Missing'
+}
+
+function groupStructureBlocks(blocks: readonly RenderableBlock[]): readonly BlockGroup[] {
+  const groups = new Map<string, RenderableBlock[]>()
+  for (const block of blocks) {
+    const key = createBlockAssetKey(block.name, block.properties)
+    const group = groups.get(key)
+    if (group) {
+      group.push(block)
+    } else {
+      groups.set(key, [block])
+    }
+  }
+
+  return [...groups.entries()]
+    .map(([key, groupBlocks]) => ({
+      key,
+      label: formatBlockLabel(groupBlocks[0] ?? key),
+      blocks: groupBlocks.sort((left, right) => getBlockKey(left.position).localeCompare(getBlockKey(right.position)))
+    }))
+    .sort((left, right) => right.blocks.length - left.blocks.length || left.label.localeCompare(right.label))
+}
+
+function formatBlockLabel(block: RenderableBlock | string): string {
+  if (typeof block === 'string') {
+    return block
+  }
+
+  const properties = Object.entries(block.properties)
+  if (properties.length === 0) {
+    return block.name
+  }
+
+  return `${block.name} [${properties.map(([key, value]) => `${key}=${value}`).join(', ')}]`
+}
+
+function getPropertyOptions(block: RenderableBlock, propertyName: string, currentValue: string): readonly string[] {
+  const options = getKnownPropertyOptions(block, propertyName)
+  return options.includes(currentValue) ? options : [currentValue, ...options]
+}
+
+function getKnownPropertyOptions(block: RenderableBlock, propertyName: string): readonly string[] {
+  const blockName = block.name.toLowerCase()
+  if (propertyName === 'axis') return ['x', 'y', 'z']
+  if (propertyName === 'half') return ['top', 'bottom', 'upper', 'lower']
+  if (propertyName === 'type') return ['bottom', 'top', 'double', 'single', 'left', 'right']
+  if (propertyName === 'shape') return ['straight', 'inner_left', 'inner_right', 'outer_left', 'outer_right', 'north_south', 'east_west', 'ascending_east', 'ascending_west', 'ascending_north', 'ascending_south']
+  if (propertyName === 'waterlogged' || propertyName === 'lit' || propertyName === 'open' || propertyName === 'powered' || propertyName === 'occupied') return ['false', 'true']
+  if (propertyName === 'facing') return ['north', 'east', 'south', 'west', 'up', 'down']
+  if (propertyName === 'horizontal_facing') return ['north', 'east', 'south', 'west']
+  if (propertyName === 'orientation') {
+    return [
+      'down_east',
+      'down_north',
+      'down_south',
+      'down_west',
+      'up_east',
+      'up_north',
+      'up_south',
+      'up_west',
+      'west_up',
+      'east_up',
+      'north_up',
+      'south_up'
+    ]
+  }
+  if (propertyName === 'face') return ['floor', 'wall', 'ceiling']
+  if (propertyName === 'hinge') return ['left', 'right']
+  if (propertyName === 'part') return ['head', 'foot']
+  if (propertyName === 'mode') return ['save', 'load', 'corner', 'data']
+  if (propertyName === 'instrument') return ['harp', 'basedrum', 'snare', 'hat', 'bass', 'flute', 'bell', 'guitar', 'chime', 'xylophone', 'iron_xylophone', 'cow_bell', 'didgeridoo', 'bit', 'banjo', 'pling']
+  if (propertyName === 'delay') return ['1', '2', '3', '4']
+  if (propertyName === 'layers') return ['1', '2', '3', '4', '5', '6', '7', '8']
+  if (propertyName === 'level') return Array.from({ length: 16 }, (_, index) => index.toString())
+  if (propertyName === 'rotation') return Array.from({ length: 16 }, (_, index) => index.toString())
+  return [block.properties[propertyName] ?? '']
+}
+
+interface EditableBlockEntityField {
+  readonly name: string
+  readonly label: string
+  readonly options?: readonly string[]
+}
+
+function getEditableBlockEntityFields(block: RenderableBlock): readonly EditableBlockEntityField[] {
+  const blockEntity = block.blockEntity
+  if (!blockEntity) {
+    return []
+  }
+
+  if (blockEntity.kind === 'jigsaw') {
+    return [
+      { name: 'name', label: 'Name' },
+      { name: 'target', label: 'Target' },
+      { name: 'pool', label: 'Pool' },
+      { name: 'target_pool', label: 'Target pool' },
+      { name: 'final_state', label: 'Final state' },
+      { name: 'joint', label: 'Joint', options: ['rollable', 'aligned'] },
+      { name: 'selection_priority', label: 'Selection priority' },
+      { name: 'placement_priority', label: 'Placement priority' }
+    ].filter((field) => field.name in blockEntity.fields || ['name', 'target', 'pool', 'final_state', 'joint'].includes(field.name))
+  }
+
+  if (blockEntity.kind === 'container') {
+    return [
+      { name: 'LootTable', label: 'Loot table' },
+      { name: 'LootTableSeed', label: 'Loot seed' }
+    ]
+  }
+
+  return Object.keys(blockEntity.fields).map((name) => ({ name, label: name }))
 }
 
 function getUniqueBlockAssetRequests(blocks: readonly RenderableBlock[]): readonly BlockAssetRequest[] {

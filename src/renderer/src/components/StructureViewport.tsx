@@ -22,7 +22,7 @@ import {
 } from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { createBlockAssetKey } from '@shared/assets'
-import type { RenderMode, ResolvedBlockAsset } from '@shared/assets'
+import type { BlockFaceTextures, BlockModelElement, RenderMode, ResolvedBlockAsset } from '@shared/assets'
 import type { LoadedStructure, RenderableBlock, StructureDimensions } from '@shared/structure'
 import { getBlockKey } from '@shared/viewer'
 
@@ -35,6 +35,7 @@ interface StructureViewportProps {
   readonly structure: LoadedStructure | undefined
   readonly visibleBlocks: readonly RenderableBlock[]
   readonly selectedBlockKey: string | null
+  readonly highlightedBlockKeys: readonly string[]
   readonly renderMode: RenderMode
   readonly blockAssets: Readonly<Record<string, ResolvedBlockAsset>>
   readonly viewportCommand: ViewportCommand | null
@@ -43,7 +44,7 @@ interface StructureViewportProps {
 
 interface BlockMeshRecord {
   readonly mesh: InstancedMesh
-  readonly blocks: readonly RenderableBlock[]
+  readonly instanceBlocks: readonly RenderableBlock[]
 }
 
 interface ViewportState {
@@ -59,14 +60,17 @@ interface ViewportState {
 interface RenderInputs {
   readonly visibleBlocks: readonly RenderableBlock[]
   readonly selectedBlockKey: string | null
+  readonly highlightedBlockKeys: ReadonlySet<string>
   readonly renderMode: RenderMode
   readonly blockAssets: Readonly<Record<string, ResolvedBlockAsset>>
 }
 
 interface MeshGroup {
   readonly signature: string
+  readonly size: readonly [x: number, y: number, z: number]
+  readonly offset: readonly [x: number, y: number, z: number]
   readonly material: MeshLambertMaterial | MeshLambertMaterial[]
-  readonly blocks: RenderableBlock[]
+  readonly instances: RenderableBlock[]
 }
 
 const DEFAULT_DIMENSIONS: StructureDimensions = { x: 16, y: 8, z: 16 }
@@ -76,11 +80,24 @@ const SELECTED_BLOCK_COLOR = new Color('#ffd166')
 const WHITE = new Color('#ffffff')
 const textureLoader = new TextureLoader()
 const textureCache = new Map<string, Texture>()
+const FULL_BLOCK_ELEMENT: BlockModelElement = {
+  from: [0, 0, 0],
+  to: [16, 16, 16],
+  faces: {
+    up: '',
+    down: '',
+    north: '',
+    south: '',
+    east: '',
+    west: ''
+  }
+}
 
 export function StructureViewport({
   structure,
   visibleBlocks,
   selectedBlockKey,
+  highlightedBlockKeys,
   renderMode,
   blockAssets,
   viewportCommand,
@@ -91,15 +108,21 @@ export function StructureViewport({
   const frameRef = useRef(0)
   const lastCommandIdRef = useRef<number | null>(null)
   const onSelectBlockRef = useRef(onSelectBlock)
-  const renderInputsRef = useRef<RenderInputs>({ visibleBlocks, selectedBlockKey, renderMode, blockAssets })
+  const renderInputsRef = useRef<RenderInputs>({
+    visibleBlocks,
+    selectedBlockKey,
+    highlightedBlockKeys: new Set(highlightedBlockKeys),
+    renderMode,
+    blockAssets
+  })
 
   useEffect(() => {
     onSelectBlockRef.current = onSelectBlock
   }, [onSelectBlock])
 
   useEffect(() => {
-    renderInputsRef.current = { visibleBlocks, selectedBlockKey, renderMode, blockAssets }
-  }, [blockAssets, renderMode, selectedBlockKey, visibleBlocks])
+    renderInputsRef.current = { visibleBlocks, selectedBlockKey, highlightedBlockKeys: new Set(highlightedBlockKeys), renderMode, blockAssets }
+  }, [blockAssets, highlightedBlockKeys, renderMode, selectedBlockKey, visibleBlocks])
 
   useEffect(() => {
     const container = containerRef.current
@@ -171,7 +194,7 @@ export function StructureViewport({
 
       if (hit?.instanceId !== undefined) {
         const record = viewport.blockMeshes.find((candidate) => candidate.mesh === hit.object)
-        onSelectBlockRef.current(record?.blocks[hit.instanceId] ?? null)
+        onSelectBlockRef.current(record?.instanceBlocks[hit.instanceId] ?? null)
         return
       }
 
@@ -225,8 +248,8 @@ export function StructureViewport({
     }
 
     viewport.structureDimensions = structure?.dimensions ?? DEFAULT_DIMENSIONS
-    updateBlocks(viewport, { visibleBlocks, selectedBlockKey, renderMode, blockAssets })
-  }, [blockAssets, renderMode, selectedBlockKey, structure, visibleBlocks])
+    updateBlocks(viewport, { visibleBlocks, selectedBlockKey, highlightedBlockKeys: new Set(highlightedBlockKeys), renderMode, blockAssets })
+  }, [blockAssets, highlightedBlockKeys, renderMode, selectedBlockKey, structure, visibleBlocks])
 
   useEffect(() => {
     const viewport = viewportRef.current
@@ -277,11 +300,11 @@ function updateBlocks(viewport: ViewportState, inputs: RenderInputs): void {
   const groups = groupBlocks(inputs)
   const matrix = new Matrix4()
   viewport.blockMeshes = groups.map((group) => {
-    const geometry = new BoxGeometry(1, 1, 1)
-    const mesh = new InstancedMesh(geometry, group.material, group.blocks.length)
+    const geometry = new BoxGeometry(group.size[0], group.size[1], group.size[2])
+    const mesh = new InstancedMesh(geometry, group.material, group.instances.length)
 
-    group.blocks.forEach((block, index) => {
-      matrix.makeTranslation(block.position[0] + 0.5, block.position[1] + 0.5, block.position[2] + 0.5)
+    group.instances.forEach((block, index) => {
+      matrix.makeTranslation(block.position[0] + group.offset[0], block.position[1] + group.offset[1], block.position[2] + group.offset[2])
       mesh.setMatrixAt(index, matrix)
       mesh.setColorAt(index, getInstanceColor(block, inputs))
     })
@@ -292,7 +315,7 @@ function updateBlocks(viewport: ViewportState, inputs: RenderInputs): void {
     }
 
     viewport.scene.add(mesh)
-    return { mesh, blocks: group.blocks }
+    return { mesh, instanceBlocks: group.instances }
   })
 }
 
@@ -300,73 +323,88 @@ function groupBlocks(inputs: RenderInputs): readonly MeshGroup[] {
   const groups = new Map<string, MeshGroup>()
 
   for (const block of inputs.visibleBlocks) {
-    const materialInfo = createMaterialInfo(block, inputs)
-    const current = groups.get(materialInfo.signature)
-    if (current) {
-      current.blocks.push(block)
-      continue
-    }
+    for (const materialInfo of createMaterialInfos(block, inputs)) {
+      const current = groups.get(materialInfo.signature)
+      if (current) {
+        current.instances.push(block)
+        continue
+      }
 
-    groups.set(materialInfo.signature, {
-      signature: materialInfo.signature,
-      material: materialInfo.material,
-      blocks: [block]
-    })
+      groups.set(materialInfo.signature, {
+        signature: materialInfo.signature,
+        size: materialInfo.size,
+        offset: materialInfo.offset,
+        material: materialInfo.material,
+        instances: [block]
+      })
+    }
   }
 
   return [...groups.values()]
 }
 
-function createMaterialInfo(
+function createMaterialInfos(
   block: RenderableBlock,
   inputs: RenderInputs
-): { readonly signature: string; readonly material: MeshLambertMaterial | MeshLambertMaterial[] } {
+): ReadonlyArray<{
+  readonly signature: string
+  readonly size: readonly [x: number, y: number, z: number]
+  readonly offset: readonly [x: number, y: number, z: number]
+  readonly material: MeshLambertMaterial | MeshLambertMaterial[]
+}> {
   if (inputs.renderMode === 'textured') {
     const asset = inputs.blockAssets[createBlockAssetKey(block.name, block.properties)]
     if (asset?.faces) {
-      const isSelected = getBlockKey(block.position) === inputs.selectedBlockKey
+      const isSelected = inputs.highlightedBlockKeys.has(getBlockKey(block.position))
       const tint = isSelected ? SELECTED_BLOCK_TINT : '#ffffff'
-      const signature = [
-        asset.faces.east,
-        asset.faces.west,
-        asset.faces.up,
-        asset.faces.down,
-        asset.faces.south,
-        asset.faces.north
-      ].join('|')
-
-      return {
-        signature: `textured:${isSelected ? 'selected' : 'default'}:${signature}`,
-        material: [
-          createTexturedMaterial(asset.faces.east, tint),
-          createTexturedMaterial(asset.faces.west, tint),
-          createTexturedMaterial(asset.faces.up, tint),
-          createTexturedMaterial(asset.faces.down, tint),
-          createTexturedMaterial(asset.faces.south, tint),
-          createTexturedMaterial(asset.faces.north, tint)
-        ]
-      }
+      const elements = asset.elements.length > 0 ? asset.elements : [{ ...FULL_BLOCK_ELEMENT, faces: asset.faces }]
+      return elements.map((element) => {
+        const geometry = getElementGeometry(element)
+        return {
+          signature: `textured:${isSelected ? 'selected' : 'default'}:${geometry.signature}:${getFaceSignature(element.faces)}`,
+          size: geometry.size,
+          offset: geometry.offset,
+          material: createTexturedMaterials(element.faces, tint)
+        }
+      })
     }
 
     const color = asset?.fallbackColor ?? getPaletteColor(block)
-    return {
+    return [{
       signature: `fallback:${color}`,
+      size: [1, 1, 1],
+      offset: [0.5, 0.5, 0.5],
       material: createColorMaterial(color)
-    }
+    }]
   }
 
   if (inputs.renderMode === 'palette') {
     const color = getPaletteColor(block)
-    return {
+    return [{
       signature: `palette:${color}`,
+      size: [1, 1, 1],
+      offset: [0.5, 0.5, 0.5],
       material: createColorMaterial(color)
-    }
+    }]
   }
 
-  return {
+  return [{
     signature: 'debug',
+    size: [1, 1, 1],
+    offset: [0.5, 0.5, 0.5],
     material: createColorMaterial('#ffffff')
-  }
+  }]
+}
+
+function createTexturedMaterials(faces: BlockFaceTextures, color: string): MeshLambertMaterial[] {
+  return [
+    createTexturedMaterial(faces.east, color),
+    createTexturedMaterial(faces.west, color),
+    createTexturedMaterial(faces.up, color),
+    createTexturedMaterial(faces.down, color),
+    createTexturedMaterial(faces.south, color),
+    createTexturedMaterial(faces.north, color)
+  ]
 }
 
 function createTexturedMaterial(dataUrl: string, color: string): MeshLambertMaterial {
@@ -374,6 +412,33 @@ function createTexturedMaterial(dataUrl: string, color: string): MeshLambertMate
     color,
     map: loadTexture(dataUrl)
   })
+}
+
+function getFaceSignature(faces: BlockFaceTextures): string {
+  return [faces.east, faces.west, faces.up, faces.down, faces.south, faces.north].join('|')
+}
+
+function getElementGeometry(element: BlockModelElement): {
+  readonly signature: string
+  readonly size: readonly [x: number, y: number, z: number]
+  readonly offset: readonly [x: number, y: number, z: number]
+} {
+  const size: readonly [number, number, number] = [
+    Math.max((element.to[0] - element.from[0]) / 16, 0.01),
+    Math.max((element.to[1] - element.from[1]) / 16, 0.01),
+    Math.max((element.to[2] - element.from[2]) / 16, 0.01)
+  ]
+  const offset: readonly [number, number, number] = [
+    (element.from[0] + element.to[0]) / 32,
+    (element.from[1] + element.to[1]) / 32,
+    (element.from[2] + element.to[2]) / 32
+  ]
+
+  return {
+    signature: `${element.from.join(',')}:${element.to.join(',')}`,
+    size,
+    offset
+  }
 }
 
 function createColorMaterial(color: string): MeshLambertMaterial {
@@ -399,7 +464,7 @@ function loadTexture(dataUrl: string): Texture {
 }
 
 function getInstanceColor(block: RenderableBlock, inputs: RenderInputs): Color {
-  if (getBlockKey(block.position) === inputs.selectedBlockKey) {
+  if (inputs.highlightedBlockKeys.has(getBlockKey(block.position))) {
     return SELECTED_BLOCK_COLOR
   }
 

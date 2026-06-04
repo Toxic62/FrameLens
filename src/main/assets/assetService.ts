@@ -8,8 +8,10 @@ import type {
   AssetScanResult,
   AssetSourceKind,
   AssetSourceSummary,
+  BlockModelElement,
   BlockAssetRequest,
   BlockFaceTextures,
+  ModelCoordinate,
   ResolvedBlockAsset,
   ResolvedBlockAssetsResult,
   VanillaAssetStatus
@@ -28,6 +30,11 @@ interface ArchiveCache {
 
 type JsonRecord = Record<string, unknown>
 type FaceName = keyof BlockFaceTextures
+type ModelElementDefinition = {
+  readonly from: ModelCoordinate
+  readonly to: ModelCoordinate
+  readonly faceTextureReferences: Readonly<Partial<Record<FaceName, string>>>
+}
 
 const MAX_MODEL_DEPTH = 12
 const VERSION_MANIFEST_URL = 'https://piston-meta.mojang.com/mc/game/version_manifest_v2.json'
@@ -49,7 +56,13 @@ interface VanillaAssetResolution {
 interface ResolvedModel {
   readonly textures: Readonly<Record<string, string>>
   readonly faceTextureReferences: Readonly<Partial<Record<FaceName, string>>>
+  readonly elements: readonly ModelElementDefinition[]
   readonly warning?: string
+}
+
+interface ModelReference {
+  readonly model: string
+  readonly yRotation: number
 }
 
 export interface DownloadClient {
@@ -282,12 +295,13 @@ async function resolveBlock(assetKey: string, block: BlockAssetRequest): Promise
 
   const id = parseResourceId(block.blockName)
   const blockstate = await readAssetJson(activeSource, `assets/${id.namespace}/blockstates/${id.path}.json`)
-  const modelReference = blockstate ? chooseModelReference(blockstate, block.properties) : `block/${id.path}`
-  const resolvedModel = await resolveModel(activeSource, id.namespace, modelReference)
+  const modelReference = blockstate ? chooseModelReference(blockstate, block.properties) : { model: `block/${id.path}`, yRotation: 0 }
+  const resolvedModel = await resolveModel(activeSource, id.namespace, modelReference.model)
   const faceTextureIds = resolveFaceTextureIds(id.namespace, id.path, resolvedModel)
   const faces = await loadFaceTextures(activeSource, faceTextureIds)
+  const elements = await resolveModelElements(activeSource, id.namespace, resolvedModel, faceTextureIds, modelReference.yRotation)
 
-  if (!faces) {
+  if (!faces || !elements) {
     return fallbackAsset(assetKey, block, resolvedModel.warning ?? 'No supported block texture found.')
   }
 
@@ -298,41 +312,49 @@ async function resolveBlock(assetKey: string, block: BlockAssetRequest): Promise
     status: 'textured-cube',
     sourceName: activeSource.name,
     faces,
+    elements,
     fallbackColor: getFallbackColor(assetKey)
   }
 }
 
-function chooseModelReference(blockstate: JsonRecord, properties: Readonly<Record<string, string>>): string {
+function chooseModelReference(blockstate: JsonRecord, properties: Readonly<Record<string, string>>): ModelReference {
   const variants = asRecord(blockstate.variants)
   if (variants) {
     const propertyKey = createVariantKey(properties)
     const exactVariant = asVariantRecord(variants[propertyKey])
     if (exactVariant) {
-      return getString(exactVariant.model) ?? 'block/missing'
+      return toModelReference(exactVariant)
     }
 
     for (const [variantKey, value] of Object.entries(variants)) {
       if (variantKeyMatchesProperties(variantKey, properties)) {
         const matched = asVariantRecord(value)
         if (matched) {
-          return getString(matched.model) ?? 'block/missing'
+          return toModelReference(matched)
         }
       }
     }
 
     const defaultVariant = asVariantRecord(variants[''])
     if (defaultVariant) {
-      return getString(defaultVariant.model) ?? 'block/missing'
+      return toModelReference(defaultVariant)
     }
 
     const firstVariant = Object.values(variants)[0]
     const firstRecord = asVariantRecord(firstVariant)
-    return getString(firstRecord?.model) ?? 'block/missing'
+    return firstRecord ? toModelReference(firstRecord) : { model: 'block/missing', yRotation: 0 }
   }
 
   const multipart = Array.isArray(blockstate.multipart) ? blockstate.multipart : []
   const firstApply = asRecord(asRecord(multipart[0])?.apply)
-  return getString(firstApply?.model) ?? 'block/missing'
+  return firstApply ? toModelReference(firstApply) : { model: 'block/missing', yRotation: 0 }
+}
+
+function toModelReference(record: JsonRecord): ModelReference {
+  return {
+    model: getString(record.model) ?? 'block/missing',
+    yRotation: normalizeRightAngleRotation(typeof record.y === 'number' ? record.y : 0)
+  }
 }
 
 async function resolveModel(
@@ -342,26 +364,28 @@ async function resolveModel(
   depth = 0
 ): Promise<ResolvedModel> {
   if (depth > MAX_MODEL_DEPTH) {
-    return { textures: {}, faceTextureReferences: {}, warning: 'Model parent chain is too deep.' }
+    return { textures: {}, faceTextureReferences: {}, elements: [], warning: 'Model parent chain is too deep.' }
   }
 
   const id = parseResourceId(modelReference, defaultNamespace)
   const model = await readAssetJson(source, `assets/${id.namespace}/models/${id.path}.json`)
   if (!model) {
-    return { textures: {}, faceTextureReferences: {}, warning: `Missing model ${id.namespace}:${id.path}.` }
+    return { textures: {}, faceTextureReferences: {}, elements: [], warning: `Missing model ${id.namespace}:${id.path}.` }
   }
 
   const parentReference = getString(model.parent)
   const parentModel = parentReference ? await resolveModel(source, id.namespace, parentReference, depth + 1) : null
   const ownTextures = asStringRecord(model.textures)
   const ownFaceTextureReferences = extractFaceTextureReferences(model)
+  const ownElements = extractModelElements(model)
 
   const resolved: ResolvedModel = {
     textures: {
       ...(parentModel?.textures ?? {}),
       ...ownTextures
     },
-    faceTextureReferences: Object.keys(ownFaceTextureReferences).length > 0 ? ownFaceTextureReferences : (parentModel?.faceTextureReferences ?? {})
+    faceTextureReferences: Object.keys(ownFaceTextureReferences).length > 0 ? ownFaceTextureReferences : (parentModel?.faceTextureReferences ?? {}),
+    elements: ownElements.length > 0 ? ownElements : (parentModel?.elements ?? [])
   }
 
   if (parentModel?.warning) {
@@ -448,6 +472,132 @@ function extractFaceTextureReferences(model: JsonRecord): Partial<Record<FaceNam
   }
 
   return references
+}
+
+function extractModelElements(model: JsonRecord): readonly ModelElementDefinition[] {
+  const elements = Array.isArray(model.elements) ? model.elements : []
+  return elements.flatMap((element) => {
+    const record = asRecord(element)
+    const from = readModelCoordinate(record?.from)
+    const to = readModelCoordinate(record?.to)
+    if (!record || !from || !to) {
+      return []
+    }
+
+    return [
+      {
+        from,
+        to,
+        faceTextureReferences: extractFaceTextureReferences({ elements: [record] })
+      }
+    ]
+  })
+}
+
+async function resolveModelElements(
+  source: AssetSource,
+  defaultNamespace: string,
+  model: ResolvedModel,
+  defaultFaceTextureIds: Record<keyof BlockFaceTextures, string>,
+  yRotation: number
+): Promise<readonly BlockModelElement[] | null> {
+  const elements = model.elements.length > 0 ? model.elements : [createFullCubeElement(model.faceTextureReferences)]
+  const resolved = await Promise.all(
+    elements.map(async (element) => {
+      const textureIds = resolveElementFaceTextureIds(defaultNamespace, model.textures, element.faceTextureReferences, defaultFaceTextureIds)
+      const faces = await loadFaceTextures(source, textureIds)
+      if (!faces) {
+        return null
+      }
+
+      const rotated = rotateElementY(element, yRotation)
+      return {
+        from: rotated.from,
+        to: rotated.to,
+        faces
+      }
+    })
+  )
+
+  return resolved.every((element): element is BlockModelElement => element !== null) ? resolved : null
+}
+
+function createFullCubeElement(faceTextureReferences: Readonly<Partial<Record<FaceName, string>>>): ModelElementDefinition {
+  return {
+    from: [0, 0, 0],
+    to: [16, 16, 16],
+    faceTextureReferences
+  }
+}
+
+function resolveElementFaceTextureIds(
+  defaultNamespace: string,
+  textures: Readonly<Record<string, string>>,
+  faceTextureReferences: Readonly<Partial<Record<FaceName, string>>>,
+  defaultFaceTextureIds: Record<keyof BlockFaceTextures, string>
+): Record<keyof BlockFaceTextures, string> {
+  return {
+    up: toTextureId(resolveTextureReference(faceTextureReferences.up, textures) ?? defaultFaceTextureIds.up, defaultNamespace),
+    down: toTextureId(resolveTextureReference(faceTextureReferences.down, textures) ?? defaultFaceTextureIds.down, defaultNamespace),
+    north: toTextureId(resolveTextureReference(faceTextureReferences.north, textures) ?? defaultFaceTextureIds.north, defaultNamespace),
+    south: toTextureId(resolveTextureReference(faceTextureReferences.south, textures) ?? defaultFaceTextureIds.south, defaultNamespace),
+    east: toTextureId(resolveTextureReference(faceTextureReferences.east, textures) ?? defaultFaceTextureIds.east, defaultNamespace),
+    west: toTextureId(resolveTextureReference(faceTextureReferences.west, textures) ?? defaultFaceTextureIds.west, defaultNamespace)
+  }
+}
+
+function rotateElementY(element: ModelElementDefinition, yRotation: number): Pick<ModelElementDefinition, 'from' | 'to'> {
+  if (yRotation === 0) {
+    return { from: element.from, to: element.to }
+  }
+
+  const corners: ModelCoordinate[] = [
+    [element.from[0], element.from[1], element.from[2]],
+    [element.from[0], element.from[1], element.to[2]],
+    [element.to[0], element.from[1], element.from[2]],
+    [element.to[0], element.from[1], element.to[2]],
+    [element.from[0], element.to[1], element.from[2]],
+    [element.from[0], element.to[1], element.to[2]],
+    [element.to[0], element.to[1], element.from[2]],
+    [element.to[0], element.to[1], element.to[2]]
+  ]
+  const rotated = corners.map((corner) => rotateCoordinateY(corner, yRotation))
+  const xs = rotated.map((corner) => corner[0])
+  const ys = rotated.map((corner) => corner[1])
+  const zs = rotated.map((corner) => corner[2])
+
+  return {
+    from: [Math.min(...xs), Math.min(...ys), Math.min(...zs)],
+    to: [Math.max(...xs), Math.max(...ys), Math.max(...zs)]
+  }
+}
+
+function rotateCoordinateY(coordinate: ModelCoordinate, yRotation: number): ModelCoordinate {
+  const x = coordinate[0] - 8
+  const z = coordinate[2] - 8
+  switch (yRotation) {
+    case 90:
+      return [8 - z, coordinate[1], 8 + x]
+    case 180:
+      return [8 - x, coordinate[1], 8 - z]
+    case 270:
+      return [8 + z, coordinate[1], 8 - x]
+    default:
+      return coordinate
+  }
+}
+
+function readModelCoordinate(value: unknown): ModelCoordinate | null {
+  if (!Array.isArray(value) || value.length !== 3) {
+    return null
+  }
+
+  const [x, y, z] = value
+  if (typeof x !== 'number' || typeof y !== 'number' || typeof z !== 'number') {
+    return null
+  }
+
+  return [x, y, z]
 }
 
 async function loadFaceTextures(
@@ -581,6 +731,7 @@ function fallbackAsset(assetKey: string, block: BlockAssetRequest, warning: stri
     status: 'fallback',
     sourceName: activeSource?.name ?? null,
     faces: null,
+    elements: [],
     fallbackColor: getFallbackColor(assetKey),
     warning
   }
@@ -727,6 +878,11 @@ function asStringRecord(value: unknown): Record<string, string> {
 
 function getString(value: unknown): string | null {
   return typeof value === 'string' && value.length > 0 ? value : null
+}
+
+function normalizeRightAngleRotation(value: number): number {
+  const normalized = ((Math.round(value / 90) * 90) % 360 + 360) % 360
+  return normalized === 90 || normalized === 180 || normalized === 270 ? normalized : 0
 }
 
 function uniquePaths(paths: readonly string[]): string[] {

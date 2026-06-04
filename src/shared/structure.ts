@@ -12,11 +12,21 @@ export interface PaletteEntry {
   readonly properties: Readonly<Record<string, string>>
 }
 
+export type BlockEntityKind = 'jigsaw' | 'container' | 'generic'
+
+export interface BlockEntitySummary {
+  readonly id: string
+  readonly kind: BlockEntityKind
+  readonly position: BlockPosition
+  readonly fields: Readonly<Record<string, string>>
+}
+
 export interface RenderableBlock {
   readonly position: BlockPosition
   readonly state: number
   readonly name: string
   readonly properties: Readonly<Record<string, string>>
+  readonly blockEntity?: BlockEntitySummary
 }
 
 export interface EntitySummary {
@@ -28,6 +38,7 @@ export interface LoadedStructureMetadata {
   readonly byteSize: number
   readonly paletteCount: number
   readonly blockCount: number
+  readonly blockEntityCount: number
   readonly entityCount: number
 }
 

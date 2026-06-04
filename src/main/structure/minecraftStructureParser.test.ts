@@ -9,7 +9,7 @@ describe('parseMinecraftStructure', () => {
       palette: [{ Name: 'minecraft:air' }, { Name: 'minecraft:stone' }],
       blocks: [
         { pos: [0, 0, 0], state: 0 },
-        { pos: [1, 0, 0], state: 1 }
+        { pos: [1, 0, 0], state: 1, nbt: { id: 'minecraft:chest', LootTable: 'minecraft:chests/simple_dungeon' } }
       ],
       entities: [{ nbt: { id: 'minecraft:item' } }]
     })
@@ -25,11 +25,66 @@ describe('parseMinecraftStructure', () => {
       byteSize: data.byteLength,
       paletteCount: 2,
       blockCount: 2,
+      blockEntityCount: 1,
       entityCount: 1
     })
     expect(structure.dimensions).toEqual({ x: 2, y: 1, z: 1 })
-    expect(structure.blocks).toEqual([{ position: [1, 0, 0], state: 1, name: 'minecraft:stone', properties: {} }])
+    expect(structure.blocks).toEqual([
+      {
+        position: [1, 0, 0],
+        state: 1,
+        name: 'minecraft:stone',
+        properties: {},
+        blockEntity: {
+          id: 'minecraft:chest',
+          kind: 'container',
+          position: [1, 0, 0],
+          fields: { LootTable: 'minecraft:chests/simple_dungeon' }
+        }
+      }
+    ])
     expect(structure.entities).toEqual([{ id: 'minecraft:item' }])
+  })
+
+  it('keeps editable jigsaw block entity fields', async () => {
+    const data = await writeStructureFixture({
+      size: [1, 1, 1],
+      palette: [{ Name: 'minecraft:jigsaw', Properties: { orientation: 'north_up' } }],
+      blocks: [
+        {
+          pos: [0, 0, 0],
+          state: 0,
+          nbt: {
+            id: 'minecraft:jigsaw',
+            name: 'minecraft:village/plains/houses',
+            target: 'minecraft:street',
+            pool: 'minecraft:village/plains/town_centers',
+            final_state: 'minecraft:air',
+            joint: 'rollable'
+          }
+        }
+      ],
+      entities: []
+    })
+
+    const structure = await parseMinecraftStructure({
+      fileName: 'jigsaw.nbt',
+      byteSize: data.byteLength,
+      data
+    })
+
+    expect(structure.metadata.blockEntityCount).toBe(1)
+    expect(structure.blocks[0]?.blockEntity).toMatchObject({
+      id: 'minecraft:jigsaw',
+      kind: 'jigsaw',
+      fields: {
+        name: 'minecraft:village/plains/houses',
+        target: 'minecraft:street',
+        pool: 'minecraft:village/plains/town_centers',
+        final_state: 'minecraft:air',
+        joint: 'rollable'
+      }
+    })
   })
 
   it('rejects missing required structure fields with a controlled error', async () => {
