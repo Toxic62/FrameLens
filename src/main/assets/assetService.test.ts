@@ -3,7 +3,19 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import JSZip from 'jszip'
 import { beforeEach, describe, expect, it } from 'vitest'
-import { activateAssetRootPath, resolveBlockAssets, setDownloadClientForTests, setVanillaCacheRoot } from './assetService'
+import {
+  activateAssetRootPath,
+  applyLearnedBlockCapabilities,
+  detectBlockCapability,
+  learnBlockCapabilitiesFromStructure,
+  listBlockAssetIds,
+  listDetectedBlockCapabilities,
+  listItemAssetIds,
+  resolveBlockAssets,
+  setDownloadClientForTests,
+  setLearnedCapabilityStorePath,
+  setVanillaCacheRoot
+} from './assetService'
 
 const PNG_1X1 = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=',
@@ -13,6 +25,7 @@ const PNG_1X1 = Buffer.from(
 describe('assetService', () => {
   beforeEach(async () => {
     setVanillaCacheRoot(await mkdtemp(join(tmpdir(), 'framelens-vanilla-cache-')))
+    setLearnedCapabilityStorePath(join(await mkdtemp(join(tmpdir(), 'framelens-learned-capabilities-')), 'capabilities.json'))
     setDownloadClientForTests({
       async getJson(url) {
         if (url.endsWith('version_manifest_v2.json')) {
@@ -77,6 +90,121 @@ describe('assetService', () => {
       status: 'textured-cube'
     })
     expect(result.assets['minecraft:stone']?.faces?.north).toMatch(/^data:image\/png;base64,/)
+  })
+
+  it('lists block IDs from detected vanilla and loose blockstates', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'framelens-block-id-instance-'))
+    await mkdir(join(root, 'kubejs', 'assets', 'custom', 'blockstates', 'machines'), { recursive: true })
+    await writeFile(join(root, 'minecraftinstance.json'), JSON.stringify({ minecraftVersion: '1.20.1' }))
+    await writeFile(
+      join(root, 'kubejs', 'assets', 'custom', 'blockstates', 'machines', 'cutter.json'),
+      JSON.stringify({ variants: { '': { model: 'custom:block/machines/cutter' } } })
+    )
+
+    await activateAssetRootPath(root)
+    const blockIds = await listBlockAssetIds()
+
+    expect(blockIds).toContain('custom:machines/cutter')
+    expect(blockIds).toContain('minecraft:stone')
+  })
+
+  it('lists item IDs from detected item models', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'framelens-item-id-instance-'))
+    await mkdir(join(root, 'kubejs', 'assets', 'custom', 'models', 'item', 'tools'), { recursive: true })
+    await writeFile(
+      join(root, 'kubejs', 'assets', 'custom', 'models', 'item', 'tools', 'hammer.json'),
+      JSON.stringify({ parent: 'item/generated', textures: { layer0: 'custom:item/tools/hammer' } })
+    )
+
+    await activateAssetRootPath(root)
+    const itemIds = await listItemAssetIds()
+
+    expect(itemIds).toContain('custom:tools/hammer')
+  })
+
+  it('detects container capabilities from mod jar block entity class names', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'framelens-modded-capabilities-'))
+    await mkdir(join(root, 'mods'), { recursive: true })
+    const zip = new JSZip()
+    zip.file('assets/reinfchest/blockstates/iron.json', JSON.stringify({ variants: { '': { model: 'reinfchest:block/iron' } } }))
+    zip.file('com/example/reinfchest/block/entity/IronChestBlockEntity.class', Buffer.from([0xca, 0xfe, 0xba, 0xbe]))
+    await writeFile(join(root, 'mods', 'reinfchest.jar'), Buffer.from(await zip.generateAsync({ type: 'uint8array' })))
+
+    await activateAssetRootPath(root)
+    const capabilities = await listDetectedBlockCapabilities()
+
+    expect(capabilities['reinfchest:iron']).toEqual({ kind: 'container', supportsLootTable: true })
+    await expect(detectBlockCapability('reinfchest:iron')).resolves.toEqual({ kind: 'container', supportsLootTable: true })
+  })
+
+  it('detects generic block entity data capabilities from mod jar class names', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'framelens-generic-capabilities-'))
+    await mkdir(join(root, 'mods'), { recursive: true })
+    const zip = new JSZip()
+    zip.file('assets/techmod/blockstates/solar_panel.json', JSON.stringify({ variants: { '': { model: 'techmod:block/solar_panel' } } }))
+    zip.file('com/example/techmod/block/entity/SolarPanelBlockEntity.class', Buffer.from([0xca, 0xfe, 0xba, 0xbe]))
+    await writeFile(join(root, 'mods', 'techmod.jar'), Buffer.from(await zip.generateAsync({ type: 'uint8array' })))
+
+    await activateAssetRootPath(root)
+    const capabilities = await listDetectedBlockCapabilities()
+
+    expect(capabilities['techmod:solar_panel']).toEqual({ kind: 'generic', supportsLootTable: false })
+  })
+
+  it('persists learned block capabilities from structure NBT across cache reloads', async () => {
+    const storePath = join(await mkdtemp(join(tmpdir(), 'framelens-persisted-capabilities-')), 'capabilities.json')
+    setLearnedCapabilityStorePath(storePath)
+    const structure = {
+      metadata: { fileName: 'learned.nbt', byteSize: 128, paletteCount: 1, blockCount: 1, blockEntityCount: 1, entityCount: 0 },
+      dimensions: { x: 1, y: 1, z: 1 },
+      palette: [{ index: 0, name: 'modded:ancient_machine', properties: {} }],
+      blocks: [
+        {
+          position: [0, 0, 0] as const,
+          state: 0,
+          name: 'modded:ancient_machine',
+          properties: {},
+          blockEntity: {
+            id: 'modded:ancient_machine',
+            kind: 'container' as const,
+            position: [0, 0, 0] as const,
+            containerMode: 'items' as const,
+            items: [{ slot: 0, id: 'minecraft:diamond', count: 1 }],
+            fields: {}
+          }
+        }
+      ],
+      entities: []
+    }
+
+    await learnBlockCapabilitiesFromStructure(structure)
+    setLearnedCapabilityStorePath(storePath)
+
+    await expect(detectBlockCapability('modded:ancient_machine')).resolves.toEqual({ kind: 'container', supportsLootTable: false })
+    await expect(listDetectedBlockCapabilities()).resolves.toMatchObject({
+      'modded:ancient_machine': { kind: 'container', supportsLootTable: false }
+    })
+
+    const applied = await applyLearnedBlockCapabilities({
+      ...structure,
+      blocks: [
+        {
+          ...structure.blocks[0]!,
+          blockEntity: {
+            id: 'modded:ancient_machine',
+            kind: 'generic' as const,
+            position: [0, 0, 0] as const,
+            fields: {}
+          }
+        }
+      ]
+    })
+
+    expect(applied.blocks[0]?.blockEntity).toMatchObject({
+      kind: 'container',
+      containerMode: 'items',
+      items: []
+    })
   })
 
   it('uses entity chest textures instead of plank fallback for chests', async () => {

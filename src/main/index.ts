@@ -5,8 +5,12 @@ import { readFile, writeFile } from 'node:fs/promises'
 import {
   ACTIVATE_ASSET_SOURCE_CHANNEL,
   CHOOSE_INSTANCE_FOLDER_CHANNEL,
+  DETECT_BLOCK_CAPABILITY_CHANNEL,
   EXPORT_STRUCTURE_CHANNEL,
   GET_CURRENT_STRUCTURE_CHANNEL,
+  LIST_BLOCK_ASSET_IDS_CHANNEL,
+  LIST_DETECTED_BLOCK_CAPABILITIES_CHANNEL,
+  LIST_ITEM_ASSET_IDS_CHANNEL,
   OPEN_STRUCTURE_CHANNEL,
   RESOLVE_BLOCK_ASSETS_CHANNEL,
   SCAN_ASSET_SOURCES_CHANNEL,
@@ -15,7 +19,20 @@ import {
 import type { ExportStructureResult, LoadedStructure, OpenStructureResult } from '@shared/structure'
 import { loadStructureFile, toOpenStructureError } from './structure/structureLoader'
 import { exportMinecraftStructure } from './structure/structureExporter'
-import { activateAssetRootPath, activateAssetSource, resolveBlockAssets, scanAssetSources, setVanillaCacheRoot } from './assets/assetService'
+import {
+  activateAssetRootPath,
+  activateAssetSource,
+  applyLearnedBlockCapabilities,
+  detectBlockCapability,
+  learnBlockCapabilitiesFromStructure,
+  listBlockAssetIds,
+  listDetectedBlockCapabilities,
+  listItemAssetIds,
+  resolveBlockAssets,
+  scanAssetSources,
+  setLearnedCapabilityStorePath,
+  setVanillaCacheRoot
+} from './assets/assetService'
 import type { AssetActivationResult, BlockAssetRequest } from '@shared/assets'
 
 let currentStructure: LoadedStructure | null = null
@@ -84,7 +101,9 @@ async function openStructureFile(): Promise<OpenStructureResult> {
 
   try {
     const data = await readFile(filePath)
-    const structure = await loadStructureFile(filePath, data)
+    const parsedStructure = await loadStructureFile(filePath, data)
+    await learnBlockCapabilitiesFromStructure(parsedStructure)
+    const structure = await applyLearnedBlockCapabilities(parsedStructure)
     currentFilePath = filePath
     currentStructure = structure
     hasUnsavedChanges = false
@@ -115,6 +134,7 @@ async function exportStructureFile(_: Electron.IpcMainInvokeEvent, structure: Lo
   try {
     const data = exportMinecraftStructure(structure)
     await writeFile(result.filePath, data)
+    await learnBlockCapabilitiesFromStructure(structure)
     currentFilePath = result.filePath
     currentStructure = structure
     hasUnsavedChanges = false
@@ -135,6 +155,7 @@ function updateCurrentStructure(
 ): void {
   currentStructure = structure
   hasUnsavedChanges = dirty
+  void learnBlockCapabilitiesFromStructure(structure)
 }
 
 async function confirmSaveBeforeQuit(window: BrowserWindow): Promise<void> {
@@ -177,6 +198,7 @@ async function saveCurrentStructure(window: BrowserWindow): Promise<boolean> {
   try {
     const data = exportMinecraftStructure(currentStructure)
     await writeFile(filePath, data)
+    await learnBlockCapabilitiesFromStructure(currentStructure)
     currentFilePath = filePath
     hasUnsavedChanges = false
     return true
@@ -223,6 +245,7 @@ async function chooseInstanceFolder(): Promise<AssetActivationResult> {
 app.whenReady().then(() => {
   electronApp.setAppUserModelId('com.framelens.app')
   setVanillaCacheRoot(join(app.getPath('userData'), 'vanilla-assets'))
+  setLearnedCapabilityStorePath(join(app.getPath('userData'), 'learned-block-capabilities.json'))
 
   app.on('browser-window-created', (_, window) => {
     optimizer.watchWindowShortcuts(window)
@@ -235,6 +258,10 @@ app.whenReady().then(() => {
   ipcMain.handle(CHOOSE_INSTANCE_FOLDER_CHANNEL, chooseInstanceFolder)
   ipcMain.handle(ACTIVATE_ASSET_SOURCE_CHANNEL, (_, sourceId: string) => activateAssetSource(sourceId))
   ipcMain.handle(RESOLVE_BLOCK_ASSETS_CHANNEL, (_, blocks: readonly BlockAssetRequest[]) => resolveBlockAssets(blocks))
+  ipcMain.handle(LIST_BLOCK_ASSET_IDS_CHANNEL, listBlockAssetIds)
+  ipcMain.handle(LIST_ITEM_ASSET_IDS_CHANNEL, listItemAssetIds)
+  ipcMain.handle(LIST_DETECTED_BLOCK_CAPABILITIES_CHANNEL, listDetectedBlockCapabilities)
+  ipcMain.handle(DETECT_BLOCK_CAPABILITY_CHANNEL, (_, blockName: string) => detectBlockCapability(blockName))
   ipcMain.on(UPDATE_CURRENT_STRUCTURE_CHANNEL, updateCurrentStructure)
   createWindow()
 

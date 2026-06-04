@@ -1,5 +1,5 @@
 import { homedir } from 'node:os'
-import { basename, join, sep } from 'node:path'
+import { basename, dirname, join, relative, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises'
 import JSZip from 'jszip'
@@ -18,6 +18,8 @@ import type {
   VanillaAssetStatus
 } from '@shared/assets'
 import { createBlockAssetKey } from '@shared/assets'
+import { getKnownBlockEntityCapability, type BlockEntityCapability } from '@shared/blockCapabilities'
+import type { BlockEntitySummary, LoadedStructure, RenderableBlock } from '@shared/structure'
 
 interface AssetSource extends AssetSourceSummary {
   readonly archivePaths: readonly string[]
@@ -27,6 +29,17 @@ interface AssetSource extends AssetSourceSummary {
 interface ArchiveCache {
   readonly zip: JSZip
   readonly entries: ReadonlySet<string>
+}
+
+interface CapabilityHintIndex {
+  readonly langKeys: ReadonlySet<string>
+  readonly classHintsByNamespace: ReadonlyMap<string, readonly ClassCapabilityHint[]>
+}
+
+interface ClassCapabilityHint {
+  readonly entry: string
+  readonly normalizedEntry: string
+  readonly isContainer: boolean
 }
 
 type JsonRecord = Record<string, unknown>
@@ -39,14 +52,21 @@ type ModelElementDefinition = {
 }
 
 const MAX_MODEL_DEPTH = 12
+const ASSET_SCAN_CONCURRENCY = 4
 const VERSION_MANIFEST_URL = 'https://piston-meta.mojang.com/mc/game/version_manifest_v2.json'
 const archiveCache = new Map<string, Promise<ArchiveCache | null>>()
 const jsonCache = new Map<string, Promise<JsonRecord | null>>()
 const binaryCache = new Map<string, Promise<Buffer | null>>()
+const blockIdCache = new Map<string, Promise<readonly string[]>>()
+const itemIdCache = new Map<string, Promise<readonly string[]>>()
+const blockCapabilityCache = new Map<string, Promise<Readonly<Record<string, BlockEntityCapability>>>>()
+const capabilityHintCache = new Map<string, Promise<CapabilityHintIndex>>()
 
 let discoveredSources: readonly AssetSource[] = []
 let activeSource: AssetSource | null = null
 let vanillaCacheRoot = join(homedir(), '.framelens', 'vanilla-assets')
+let learnedCapabilityStorePath = join(homedir(), '.framelens', 'learned-block-capabilities.json')
+let learnedCapabilityStoreCache: Promise<Record<string, BlockEntityCapability>> | null = null
 let downloadClient: DownloadClient = createFetchDownloadClient()
 
 interface VanillaAssetResolution {
@@ -74,6 +94,11 @@ export interface DownloadClient {
 
 export function setVanillaCacheRoot(rootPath: string): void {
   vanillaCacheRoot = rootPath
+}
+
+export function setLearnedCapabilityStorePath(filePath: string): void {
+  learnedCapabilityStorePath = filePath
+  learnedCapabilityStoreCache = null
 }
 
 export function setDownloadClientForTests(client: DownloadClient): void {
@@ -138,6 +163,157 @@ export async function resolveBlockAssets(blocks: readonly BlockAssetRequest[]): 
     activeSource: activeSource ? toSummary(activeSource) : null,
     assets: Object.fromEntries(entries)
   }
+}
+
+export async function listBlockAssetIds(): Promise<readonly string[]> {
+  if (!activeSource) {
+    return []
+  }
+
+  return getCachedBlockAssetIds(activeSource)
+}
+
+export async function listItemAssetIds(): Promise<readonly string[]> {
+  if (!activeSource) {
+    return []
+  }
+
+  return getCachedItemAssetIds(activeSource)
+}
+
+function getCachedBlockAssetIds(source: AssetSource): Promise<readonly string[]> {
+  if (!blockIdCache.has(source.id)) {
+    blockIdCache.set(source.id, listBlockAssetIdsUncached(source))
+  }
+
+  return blockIdCache.get(source.id) ?? Promise.resolve([])
+}
+
+async function listBlockAssetIdsUncached(source: AssetSource): Promise<readonly string[]> {
+  const blockIds = new Set<string>()
+  await Promise.all([collectLooseBlockIds(source, blockIds), collectArchiveBlockIds(source, blockIds)])
+
+  return [...blockIds].sort((left, right) => left.localeCompare(right))
+}
+
+function getCachedItemAssetIds(source: AssetSource): Promise<readonly string[]> {
+  if (!itemIdCache.has(source.id)) {
+    itemIdCache.set(source.id, listItemAssetIdsUncached(source))
+  }
+
+  return itemIdCache.get(source.id) ?? Promise.resolve([])
+}
+
+async function listItemAssetIdsUncached(source: AssetSource): Promise<readonly string[]> {
+  const itemIds = new Set<string>()
+  await Promise.all([collectLooseItemIds(source, itemIds), collectArchiveItemIds(source, itemIds)])
+
+  return [...itemIds].sort((left, right) => left.localeCompare(right))
+}
+
+export async function listDetectedBlockCapabilities(): Promise<Readonly<Record<string, BlockEntityCapability>>> {
+  if (!activeSource) {
+    return readLearnedCapabilities()
+  }
+
+  const source = activeSource
+  if (!blockCapabilityCache.has(source.id)) {
+    blockCapabilityCache.set(source.id, listDetectedBlockCapabilitiesUncached(source))
+  }
+
+  return blockCapabilityCache.get(source.id) ?? {}
+}
+
+export async function detectBlockCapability(blockName: string): Promise<BlockEntityCapability | null> {
+  const normalized = normalizeBlockId(blockName)
+  const knownCapability = getKnownBlockEntityCapability(normalized)
+  if (knownCapability) {
+    return knownCapability
+  }
+
+  const learnedCapability = (await readLearnedCapabilities())[normalized] ?? null
+  const id = parseResourceId(normalized)
+  const nameCapability = hasContainerNameHint(id.namespace, id.path)
+    ? ({ kind: 'container', supportsLootTable: true } satisfies BlockEntityCapability)
+    : null
+  if (learnedCapability?.kind === 'container' || nameCapability?.kind === 'container') {
+    return {
+      kind: 'container',
+      supportsLootTable: learnedCapability?.supportsLootTable ?? nameCapability?.supportsLootTable ?? true
+    }
+  }
+  if (learnedCapability) {
+    return learnedCapability
+  }
+  if (nameCapability) {
+    return { kind: 'container', supportsLootTable: true }
+  }
+
+  if (!activeSource) {
+    return null
+  }
+
+  const hints = await getCachedCapabilityHints(activeSource)
+  return inferDetectedBlockCapability(normalized, hints)
+}
+
+export async function listLearnedBlockCapabilities(): Promise<Readonly<Record<string, BlockEntityCapability>>> {
+  return readLearnedCapabilities()
+}
+
+export async function learnBlockCapabilitiesFromStructure(structure: LoadedStructure): Promise<void> {
+  const current = await readLearnedCapabilities()
+  const next: Record<string, BlockEntityCapability> = { ...current }
+  let changed = false
+
+  for (const block of structure.blocks) {
+    const capability = inferCapabilityFromRenderableBlock(block)
+    if (!capability) {
+      continue
+    }
+
+    const normalized = normalizeBlockId(block.name)
+    if (shouldReplaceLearnedCapability(next[normalized], capability)) {
+      next[normalized] = capability
+      changed = true
+    }
+  }
+
+  if (changed) {
+    await writeLearnedCapabilities(next)
+  }
+}
+
+export async function applyLearnedBlockCapabilities(structure: LoadedStructure): Promise<LoadedStructure> {
+  const learned = await readLearnedCapabilities()
+  let changed = false
+  const blocks = structure.blocks.map((block) => {
+    const capability = learned[normalizeBlockId(block.name)]
+    if (!capability || !block.blockEntity) {
+      return block
+    }
+
+    const blockEntity = updateBlockEntityWithCapability(block.blockEntity, capability)
+    if (blockEntity === block.blockEntity) {
+      return block
+    }
+
+    changed = true
+    return { ...block, blockEntity }
+  })
+
+  return changed ? { ...structure, blocks } : structure
+}
+
+async function listDetectedBlockCapabilitiesUncached(source: AssetSource): Promise<Readonly<Record<string, BlockEntityCapability>>> {
+  const [blockIds, hints] = await Promise.all([getCachedBlockAssetIds(source), getCachedCapabilityHints(source)])
+  const learned = await readLearnedCapabilities()
+  const entries = blockIds.flatMap((blockId) => {
+    const capability = inferDetectedBlockCapability(blockId, hints)
+    return capability ? [[blockId, capability] as const] : []
+  })
+
+  return { ...Object.fromEntries(entries), ...learned }
 }
 
 async function inspectAssetSource(rootPath: string): Promise<AssetSource | null> {
@@ -288,6 +464,362 @@ async function findLooseAssetRoots(rootPath: string): Promise<readonly string[]>
   }
 
   return uniquePaths(roots)
+}
+
+async function collectLooseBlockIds(source: AssetSource, blockIds: Set<string>): Promise<void> {
+  await mapWithConcurrency(source.looseAssetRoots, ASSET_SCAN_CONCURRENCY, async (root) => {
+    const assetsRoot = join(root, 'assets')
+    const namespaces = await safeReaddir(assetsRoot)
+    await mapWithConcurrency(
+      namespaces.filter((entry) => entry.isDirectory()),
+      ASSET_SCAN_CONCURRENCY,
+      async (namespaceEntry) => {
+        const blockstatesRoot = join(assetsRoot, namespaceEntry.name, 'blockstates')
+        const blockstateFiles = await findFiles(blockstatesRoot, (filePath) => filePath.endsWith('.json'), 12)
+        for (const filePath of blockstateFiles) {
+          const blockPath = relative(blockstatesRoot, filePath).replace(/\\/g, '/').replace(/\.json$/i, '')
+          if (blockPath.length > 0) {
+            blockIds.add(`${namespaceEntry.name}:${blockPath}`)
+          }
+        }
+      }
+    )
+  })
+}
+
+async function collectArchiveBlockIds(source: AssetSource, blockIds: Set<string>): Promise<void> {
+  await mapWithConcurrency(source.archivePaths, ASSET_SCAN_CONCURRENCY, async (archivePath) => {
+    const archive = await loadArchive(archivePath)
+    if (!archive) {
+      return
+    }
+
+    for (const entry of archive.entries) {
+      const match = /^assets\/([^/]+)\/blockstates\/(.+)\.json$/i.exec(entry)
+      if (match?.[1] && match[2]) {
+        blockIds.add(`${match[1]}:${match[2]}`)
+      }
+    }
+  })
+}
+
+async function collectLooseItemIds(source: AssetSource, itemIds: Set<string>): Promise<void> {
+  await mapWithConcurrency(source.looseAssetRoots, ASSET_SCAN_CONCURRENCY, async (root) => {
+    const assetsRoot = join(root, 'assets')
+    const namespaces = await safeReaddir(assetsRoot)
+    await mapWithConcurrency(
+      namespaces.filter((entry) => entry.isDirectory()),
+      ASSET_SCAN_CONCURRENCY,
+      async (namespaceEntry) => {
+        const itemModelsRoot = join(assetsRoot, namespaceEntry.name, 'models', 'item')
+        const itemModelFiles = await findFiles(itemModelsRoot, (filePath) => filePath.endsWith('.json'), 12)
+        for (const filePath of itemModelFiles) {
+          const itemPath = relative(itemModelsRoot, filePath).replace(/\\/g, '/').replace(/\.json$/i, '')
+          if (itemPath.length > 0) {
+            itemIds.add(`${namespaceEntry.name}:${itemPath}`)
+          }
+        }
+      }
+    )
+  })
+}
+
+async function collectArchiveItemIds(source: AssetSource, itemIds: Set<string>): Promise<void> {
+  await mapWithConcurrency(source.archivePaths, ASSET_SCAN_CONCURRENCY, async (archivePath) => {
+    const archive = await loadArchive(archivePath)
+    if (!archive) {
+      return
+    }
+
+    for (const entry of archive.entries) {
+      const match = /^assets\/([^/]+)\/models\/item\/(.+)\.json$/i.exec(entry)
+      if (match?.[1] && match[2]) {
+        itemIds.add(`${match[1]}:${match[2]}`)
+      }
+    }
+  })
+}
+
+async function collectCapabilityHints(source: AssetSource): Promise<CapabilityHintIndex> {
+  const langKeys = new Set<string>()
+  const classHintsByNamespace = new Map<string, ClassCapabilityHint[]>()
+
+  await Promise.all([
+    collectLooseLangKeys(source, langKeys),
+    collectArchiveCapabilityHints(source, langKeys, classHintsByNamespace)
+  ])
+
+  return { langKeys, classHintsByNamespace }
+}
+
+function getCachedCapabilityHints(source: AssetSource): Promise<CapabilityHintIndex> {
+  if (!capabilityHintCache.has(source.id)) {
+    capabilityHintCache.set(source.id, collectCapabilityHints(source))
+  }
+
+  return capabilityHintCache.get(source.id) ?? Promise.resolve({ langKeys: new Set(), classHintsByNamespace: new Map() })
+}
+
+async function readLearnedCapabilities(): Promise<Record<string, BlockEntityCapability>> {
+  if (!learnedCapabilityStoreCache) {
+    learnedCapabilityStoreCache = readLearnedCapabilitiesUncached()
+  }
+
+  return learnedCapabilityStoreCache
+}
+
+async function readLearnedCapabilitiesUncached(): Promise<Record<string, BlockEntityCapability>> {
+  const json = await readJsonFile(learnedCapabilityStorePath)
+  const learned: Record<string, BlockEntityCapability> = {}
+  for (const [blockName, value] of Object.entries(json ?? {})) {
+    const capability = asBlockEntityCapability(value)
+    if (capability) {
+      learned[normalizeBlockId(blockName)] = capability
+    }
+  }
+
+  return learned
+}
+
+async function writeLearnedCapabilities(capabilities: Record<string, BlockEntityCapability>): Promise<void> {
+  await mkdir(dirname(learnedCapabilityStorePath), { recursive: true })
+  const sorted = Object.fromEntries(Object.entries(capabilities).sort(([left], [right]) => left.localeCompare(right)))
+  await writeFile(learnedCapabilityStorePath, `${JSON.stringify(sorted, null, 2)}\n`)
+  learnedCapabilityStoreCache = Promise.resolve(sorted)
+  blockCapabilityCache.clear()
+}
+
+function asBlockEntityCapability(value: unknown): BlockEntityCapability | null {
+  const record = asRecord(value)
+  if (!record) {
+    return null
+  }
+
+  const kind = record.kind
+  const supportsLootTable = record.supportsLootTable
+  if (
+    (kind === 'container' || kind === 'generic' || kind === 'jigsaw') &&
+    typeof supportsLootTable === 'boolean'
+  ) {
+    return { kind, supportsLootTable }
+  }
+
+  return null
+}
+
+function inferCapabilityFromRenderableBlock(block: RenderableBlock): BlockEntityCapability | null {
+  if (!block.blockEntity) {
+    return null
+  }
+
+  if (block.blockEntity.kind === 'container') {
+    return {
+      kind: 'container',
+      supportsLootTable: block.blockEntity.containerMode === 'lootTable' || block.blockEntity.fields.LootTable !== undefined
+    }
+  }
+
+  if (block.blockEntity.kind === 'jigsaw') {
+    return { kind: 'jigsaw', supportsLootTable: false }
+  }
+
+  return { kind: 'generic', supportsLootTable: false }
+}
+
+function shouldReplaceLearnedCapability(
+  current: BlockEntityCapability | undefined,
+  next: BlockEntityCapability
+): boolean {
+  if (!current) {
+    return true
+  }
+
+  if (current.kind !== 'container' && next.kind === 'container') {
+    return true
+  }
+
+  return current.kind === 'container' && next.kind === 'container' && !current.supportsLootTable && next.supportsLootTable
+}
+
+function updateBlockEntityWithCapability(
+  blockEntity: BlockEntitySummary,
+  capability: BlockEntityCapability
+): BlockEntitySummary {
+  if (capability.kind === blockEntity.kind) {
+    return blockEntity
+  }
+
+  if (capability.kind === 'container') {
+    const containerMode = capability.supportsLootTable && blockEntity.fields.LootTable ? 'lootTable' : 'items'
+    return {
+      ...blockEntity,
+      kind: 'container',
+      containerMode,
+      ...(containerMode === 'items' ? { items: blockEntity.items ?? [] } : {})
+    }
+  }
+
+  return blockEntity
+}
+
+async function collectLooseLangKeys(source: AssetSource, langKeys: Set<string>): Promise<void> {
+  await mapWithConcurrency(source.looseAssetRoots, ASSET_SCAN_CONCURRENCY, async (root) => {
+    const assetsRoot = join(root, 'assets')
+    const namespaces = await safeReaddir(assetsRoot)
+    await mapWithConcurrency(
+      namespaces.filter((entry) => entry.isDirectory()),
+      ASSET_SCAN_CONCURRENCY,
+      async (namespaceEntry) => {
+        const langRoot = join(assetsRoot, namespaceEntry.name, 'lang')
+        const langFiles = await findFiles(langRoot, (filePath) => filePath.endsWith('.json'), 2)
+        await mapWithConcurrency(langFiles, ASSET_SCAN_CONCURRENCY, (filePath) => addLangKeysFromFile(filePath, langKeys))
+      }
+    )
+  })
+}
+
+async function collectArchiveCapabilityHints(
+  source: AssetSource,
+  langKeys: Set<string>,
+  classHintsByNamespace: Map<string, ClassCapabilityHint[]>
+): Promise<void> {
+  await mapWithConcurrency(source.archivePaths, ASSET_SCAN_CONCURRENCY, async (archivePath) => {
+    const archive = await loadArchive(archivePath)
+    if (!archive) {
+      return
+    }
+
+    await mapWithConcurrency(
+      [...archive.entries].filter((entry) => /^assets\/[^/]+\/lang\/.+\.json$/i.test(entry)),
+      ASSET_SCAN_CONCURRENCY,
+      (entry) => addLangKeysFromArchiveEntry(archive, entry, langKeys)
+    )
+    collectArchiveBlockEntityClassHints(archive, classHintsByNamespace)
+  })
+}
+
+function collectArchiveBlockEntityClassHints(archive: ArchiveCache, classHintsByNamespace: Map<string, ClassCapabilityHint[]>): void {
+  const namespaces = [...new Set([...archive.entries].flatMap((entry) => /^assets\/([^/]+)\//i.exec(entry)?.[1] ?? []))]
+  const entries = [...archive.zip.file(/(?:blockentity|tileentity).*\.class$/i)].map((entry) => entry.name)
+  for (const entry of entries) {
+    const normalizedEntry = normalizeSearchText(entry)
+    const namespace = findNamespaceInClassEntry(normalizedEntry, namespaces)
+    if (!namespace) {
+      continue
+    }
+
+    const hints = classHintsByNamespace.get(namespace) ?? []
+    hints.push({
+      entry,
+      normalizedEntry,
+      isContainer: hasContainerClassHint(entry)
+    })
+    classHintsByNamespace.set(namespace, hints)
+  }
+}
+
+async function addLangKeysFromFile(filePath: string, langKeys: Set<string>): Promise<void> {
+  const lang = await readJsonFile(filePath)
+  if (!lang) {
+    return
+  }
+
+  for (const key of Object.keys(lang)) {
+    langKeys.add(key.toLowerCase())
+  }
+}
+
+async function addLangKeysFromArchiveEntry(archive: ArchiveCache, entryPath: string, langKeys: Set<string>): Promise<void> {
+  const entry = archive.zip.file(entryPath)
+  if (!entry) {
+    return
+  }
+
+  try {
+    const lang = JSON.parse(await entry.async('string')) as JsonRecord
+    for (const key of Object.keys(lang)) {
+      langKeys.add(key.toLowerCase())
+    }
+  } catch {
+    return
+  }
+}
+
+function inferDetectedBlockCapability(blockId: string, hints: CapabilityHintIndex): BlockEntityCapability | null {
+  const knownCapability = getKnownBlockEntityCapability(blockId)
+  if (knownCapability) {
+    return knownCapability
+  }
+
+  const id = parseResourceId(blockId)
+  if (hasContainerTranslationKey(id.namespace, id.path, hints.langKeys)) {
+    return { kind: 'container', supportsLootTable: true }
+  }
+
+  const classMatches = findMatchingBlockEntityClassEntries(id.namespace, id.path, hints.classHintsByNamespace)
+  if (classMatches.some((match) => match.isContainer)) {
+    return { kind: 'container', supportsLootTable: true }
+  }
+  if (classMatches.length > 0) {
+    return { kind: 'generic', supportsLootTable: false }
+  }
+
+  if (hasContainerNameHint(id.namespace, id.path)) {
+    return { kind: 'container', supportsLootTable: true }
+  }
+
+  return null
+}
+
+function hasContainerTranslationKey(namespace: string, blockPath: string, langKeys: ReadonlySet<string>): boolean {
+  const compactPath = blockPath.replace(/\//g, '.')
+  return [
+    `container.${namespace}.${blockPath}`,
+    `container.${namespace}.${compactPath}`,
+    `screen.${namespace}.${blockPath}`,
+    `screen.${namespace}.${compactPath}`,
+    `gui.${namespace}.${blockPath}`,
+    `gui.${namespace}.${compactPath}`
+  ].some((key) => langKeys.has(key.toLowerCase()))
+}
+
+function findMatchingBlockEntityClassEntries(
+  namespace: string,
+  blockPath: string,
+  classHintsByNamespace: ReadonlyMap<string, readonly ClassCapabilityHint[]>
+): readonly ClassCapabilityHint[] {
+  const tokens = blockPath.split(/[^a-zA-Z0-9]+/).filter((token) => token.length > 0)
+  if (tokens.length === 0) {
+    return []
+  }
+
+  const hints = classHintsByNamespace.get(namespace) ?? []
+  return hints.filter((hint) => tokens.every((token) => hint.normalizedEntry.includes(normalizeSearchText(token))))
+}
+
+function hasContainerClassHint(classEntry: string): boolean {
+  return /(?:chest|barrel|crate|container|inventory|storage|drawer|cabinet|locker|safe|box|shelf|vault)/i.test(classEntry)
+}
+
+function hasContainerNameHint(namespace: string, blockPath: string): boolean {
+  const tokens = `${namespace}/${blockPath}`.split(/[^a-zA-Z0-9]+/).map((token) => token.toLowerCase())
+  return tokens.some((token) =>
+    ['chest', 'barrel', 'crate', 'container', 'inventory', 'storage', 'drawer', 'cabinet', 'locker', 'safe', 'box', 'vault'].includes(token)
+  )
+}
+
+function normalizeSearchText(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]/g, '')
+}
+
+function findNamespaceInClassEntry(normalizedClassEntry: string, namespaces: readonly string[]): string | null {
+  for (const namespace of namespaces) {
+    if (normalizedClassEntry.includes(normalizeSearchText(namespace))) {
+      return namespace
+    }
+  }
+
+  return null
 }
 
 async function resolveBlock(assetKey: string, block: BlockAssetRequest): Promise<ResolvedBlockAsset> {
@@ -811,6 +1343,14 @@ function parseResourceId(value: string, defaultNamespace = 'minecraft'): { reado
   return { namespace: namespace || defaultNamespace, path: pathParts.join(':') }
 }
 
+function normalizeBlockId(blockName: string): string {
+  const trimmed = blockName.trim().toLowerCase()
+  if (trimmed.length === 0) {
+    return 'minecraft:air'
+  }
+  return trimmed.includes(':') ? trimmed : `minecraft:${trimmed}`
+}
+
 function toTextureId(value: string, defaultNamespace: string): string {
   return value.includes(':') ? value : `${defaultNamespace}:${value}`
 }
@@ -902,6 +1442,23 @@ async function findFiles(rootPath: string, predicate: (filePath: string) => bool
   }
 
   return results
+}
+
+async function mapWithConcurrency<T>(
+  values: readonly T[],
+  concurrency: number,
+  mapper: (value: T) => Promise<void>
+): Promise<void> {
+  const workers = Array.from({ length: Math.min(Math.max(1, concurrency), values.length) }, async (_, workerIndex) => {
+    for (let index = workerIndex; index < values.length; index += concurrency) {
+      const value = values[index]
+      if (value !== undefined) {
+        await mapper(value)
+      }
+    }
+  })
+
+  await Promise.all(workers)
 }
 
 async function pathExists(filePath: string): Promise<boolean> {

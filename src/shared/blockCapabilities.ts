@@ -80,6 +80,10 @@ export function getKnownBlockEntityCapability(blockName: string): BlockEntityCap
     return { kind: 'generic', supportsLootTable: false }
   }
 
+  if (hasModdedContainerNameHint(normalized)) {
+    return { kind: 'container', supportsLootTable: true }
+  }
+
   return null
 }
 
@@ -108,4 +112,16 @@ function normalizeBlockId(blockName: string): string {
     return 'minecraft:air'
   }
   return trimmed.includes(':') ? trimmed : `minecraft:${trimmed}`
+}
+
+function hasModdedContainerNameHint(blockName: string): boolean {
+  const [namespace, path = ''] = blockName.split(':')
+  if (namespace === 'minecraft') {
+    return false
+  }
+
+  const tokens = `${namespace}/${path}`.split(/[^a-z0-9]+/)
+  return tokens.some((token) =>
+    ['chest', 'barrel', 'crate', 'container', 'inventory', 'storage', 'drawer', 'cabinet', 'locker', 'safe', 'box', 'vault'].includes(token)
+  )
 }

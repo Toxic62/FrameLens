@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import type { ReactElement, ReactNode } from 'react'
+import type { KeyboardEvent, ReactElement, ReactNode } from 'react'
 import {
   CheckSquare,
   ChevronDown,
@@ -81,6 +81,9 @@ export default function App(): ReactElement {
   const [assetScan, setAssetScan] = useState<AssetScanResult>({ sources: [], activeSourceId: null })
   const [assetStatus, setAssetStatus] = useState('Choose an instance folder for textured rendering.')
   const [blockAssets, setBlockAssets] = useState<Readonly<Record<string, ResolvedBlockAsset>>>({})
+  const [detectedBlockIds, setDetectedBlockIds] = useState<readonly string[]>([])
+  const [detectedItemIds, setDetectedItemIds] = useState<readonly string[]>([])
+  const [detectedBlockCapabilities, setDetectedBlockCapabilities] = useState<Readonly<Record<string, BlockEntityCapability>>>({})
 
   useEffect(() => {
     let isMounted = true
@@ -173,6 +176,8 @@ export default function App(): ReactElement {
   }, [clipBounds, selectedBlockKey, structure])
   const blockGroups = useMemo(() => (structure ? groupStructureBlocks(structure.blocks) : []), [structure])
   const filteredBlockGroups = useMemo(() => filterBlockGroups(blockGroups, blockSearch), [blockGroups, blockSearch])
+  const blockNameSuggestions = useMemo(() => createBlockNameSuggestions(structure, detectedBlockIds), [detectedBlockIds, structure])
+  const itemIdSuggestions = useMemo(() => createItemIdSuggestions(structure, detectedBlockIds, detectedItemIds), [detectedBlockIds, detectedItemIds, structure])
   const highlightedBlockKeys = useMemo(() => {
     if (!structure) {
       return []
@@ -287,10 +292,65 @@ export default function App(): ReactElement {
   }, [assetScan.activeSourceId, structure])
 
   useEffect(() => {
+    let isMounted = true
+
+    if (!assetScan.activeSourceId) {
+      setDetectedBlockIds([])
+      setDetectedItemIds([])
+      setDetectedBlockCapabilities({})
+      return undefined
+    }
+
+    Promise.all([window.frameLens.listBlockAssetIds(), window.frameLens.listItemAssetIds()])
+      .then(([blockIds, itemIds]) => {
+        if (isMounted) {
+          setDetectedBlockIds(blockIds)
+          setDetectedItemIds(itemIds)
+        }
+      })
+      .catch(() => {
+        if (isMounted) {
+          setDetectedBlockIds([])
+          setDetectedItemIds([])
+          setDetectedBlockCapabilities({})
+        }
+      })
+
+    return () => {
+      isMounted = false
+    }
+  }, [assetScan.activeSourceId])
+
+  useEffect(() => {
     if (selectedBlockKey !== null && !selectedBlock) {
       setSelectedBlockKey(null)
     }
   }, [selectedBlock, selectedBlockKey])
+
+  useEffect(() => {
+    if (!selectedBlock) {
+      return undefined
+    }
+
+    const normalized = normalizeBlockName(selectedBlock.name).toLowerCase()
+    if (detectedBlockCapabilities[normalized] || getKnownBlockEntityCapability(normalized)) {
+      return undefined
+    }
+
+    let isMounted = true
+    window.frameLens
+      .detectBlockCapability(normalized)
+      .then((capability) => {
+        if (isMounted && capability) {
+          setDetectedBlockCapabilities((current) => ({ ...current, [normalized]: capability }))
+        }
+      })
+      .catch(() => undefined)
+
+    return () => {
+      isMounted = false
+    }
+  }, [detectedBlockCapabilities, selectedBlock])
 
   function handleSelectBlock(block: RenderableBlock | null): void {
     setSelectedBlockKey(block ? getBlockKey(block.position) : null)
@@ -641,7 +701,9 @@ export default function App(): ReactElement {
     }
 
     const keySet = new Set(blockKeys)
-    const needsUpdate = structure.blocks.some((block) => keySet.has(getBlockKey(block.position)) && !block.blockEntity && getBlockCapabilities(block.name, structure) !== null)
+    const needsUpdate = structure.blocks.some(
+      (block) => keySet.has(getBlockKey(block.position)) && shouldUpdateBlockEntityForCapabilities(block, structure, detectedBlockCapabilities)
+    )
     if (!needsUpdate) {
       return
     }
@@ -649,12 +711,12 @@ export default function App(): ReactElement {
     updateLoadedStructure((current) => ({
       ...current,
       blocks: current.blocks.map((block) => {
-        if (!keySet.has(getBlockKey(block.position)) || block.blockEntity) {
+        if (!keySet.has(getBlockKey(block.position))) {
           return block
         }
 
-        const blockEntity = createDefaultBlockEntity(block, current)
-        return blockEntity ? { ...block, blockEntity } : block
+        const updatedBlockEntity = getUpdatedBlockEntityForCapabilities(block, current, detectedBlockCapabilities)
+        return updatedBlockEntity && updatedBlockEntity !== block.blockEntity ? { ...block, blockEntity: updatedBlockEntity } : block
       })
     }))
   }
@@ -770,7 +832,7 @@ export default function App(): ReactElement {
                   block={selectedBlock}
                   structure={structure}
                   onOpenProperties={(blockKey) => setEditorDialog({ kind: 'properties', blockKeys: [blockKey] })}
-                  canHaveData={getBlockCapabilities(selectedBlock.name, structure) !== null}
+                  canHaveData={getBlockCapabilities(selectedBlock.name, structure, detectedBlockCapabilities) !== null}
                   onOpenData={(blockKey) => openDataEditor([blockKey])}
                 />
               ) : (
@@ -799,7 +861,7 @@ export default function App(): ReactElement {
                 onSelectBlock={handleSelectBlockFromList}
                 onToggleBlockSelection={toggleBlockSelection}
                 onOpenProperties={(blockKeys) => setEditorDialog({ kind: 'properties', blockKeys })}
-                getBlockCapabilities={(block) => getBlockCapabilities(block.name, structure)}
+                getBlockCapabilities={(block) => getBlockCapabilities(block.name, structure, detectedBlockCapabilities)}
                 onOpenData={openDataEditor}
               />
             </PanelSection>
@@ -848,6 +910,7 @@ export default function App(): ReactElement {
           onContainerItemChange={updateContainerItem}
           onAddContainerItem={addContainerItem}
           onRemoveContainerItem={removeContainerItem}
+          itemIdSuggestions={itemIdSuggestions}
         />
       )}
       {placementDialog && structure && (
@@ -855,6 +918,8 @@ export default function App(): ReactElement {
           dialog={placementDialog}
           structure={structure}
           overlaps={placementPreviewOverlaps}
+          blockNameSuggestions={blockNameSuggestions}
+          detectedBlockCapabilities={detectedBlockCapabilities}
           onClose={() => setPlacementDialog(null)}
           onPositionChange={updatePlacementPosition}
           onApply={applyPlacedBlock}
@@ -1197,6 +1262,7 @@ interface BlockEntityEditorProps {
   readonly onContainerItemChange: (index: number, item: ContainerItemSummary) => void
   readonly onAddContainerItem: () => void
   readonly onRemoveContainerItem: (index: number) => void
+  readonly itemIdSuggestions: readonly string[]
 }
 
 function BlockEntityEditor({
@@ -1205,7 +1271,8 @@ function BlockEntityEditor({
   onContainerModeChange,
   onContainerItemChange,
   onAddContainerItem,
-  onRemoveContainerItem
+  onRemoveContainerItem,
+  itemIdSuggestions
 }: BlockEntityEditorProps): ReactElement {
   const blockEntity = block.blockEntity
   if (!blockEntity) {
@@ -1221,6 +1288,7 @@ function BlockEntityEditor({
         onContainerItemChange={onContainerItemChange}
         onAddContainerItem={onAddContainerItem}
         onRemoveContainerItem={onRemoveContainerItem}
+        itemIdSuggestions={itemIdSuggestions}
       />
     )
   }
@@ -1281,6 +1349,7 @@ interface ContainerBlockEntityEditorProps {
   readonly onContainerItemChange: (index: number, item: ContainerItemSummary) => void
   readonly onAddContainerItem: () => void
   readonly onRemoveContainerItem: (index: number) => void
+  readonly itemIdSuggestions: readonly string[]
 }
 
 function ContainerBlockEntityEditor({
@@ -1289,7 +1358,8 @@ function ContainerBlockEntityEditor({
   onContainerModeChange,
   onContainerItemChange,
   onAddContainerItem,
-  onRemoveContainerItem
+  onRemoveContainerItem,
+  itemIdSuggestions
 }: ContainerBlockEntityEditorProps): ReactElement {
   const blockEntity = block.blockEntity
   if (!blockEntity) {
@@ -1346,7 +1416,7 @@ function ContainerBlockEntityEditor({
           {items.length > 0 ? (
             <ol className="container-item-list">
               {items.map((item, index) => (
-                <li key={`${item.slot}-${item.id}-${index}`}>
+                <li key={index}>
                   <label className="field-label">
                     <span>Slot</span>
                     <input
@@ -1359,10 +1429,13 @@ function ContainerBlockEntityEditor({
                   </label>
                   <label className="field-label item-id-field">
                     <span>Item</span>
-                    <input
-                      className="search-input compact-input"
+                    <ResourceIdAutocomplete
+                      ariaLabel="Item"
+                      className="compact-input"
                       value={item.id}
-                      onChange={(event) => onContainerItemChange(index, { ...item, id: normalizeItemName(event.target.value) })}
+                      suggestions={itemIdSuggestions}
+                      onChange={(value) => onContainerItemChange(index, { ...item, id: value })}
+                      onCommit={(value) => onContainerItemChange(index, { ...item, id: normalizeItemName(value) })}
                     />
                   </label>
                   <label className="field-label">
@@ -1406,6 +1479,7 @@ interface BlockEditorModalProps {
   readonly onContainerItemChange: (blockKey: string, index: number, item: ContainerItemSummary) => void
   readonly onAddContainerItem: (blockKey: string) => void
   readonly onRemoveContainerItem: (blockKey: string, index: number) => void
+  readonly itemIdSuggestions: readonly string[]
 }
 
 function BlockEditorModal({
@@ -1418,7 +1492,8 @@ function BlockEditorModal({
   onContainerModeChange,
   onContainerItemChange,
   onAddContainerItem,
-  onRemoveContainerItem
+  onRemoveContainerItem,
+  itemIdSuggestions
 }: BlockEditorModalProps): ReactElement {
   const blockKeys = blocks.map((block) => getBlockKey(block.position))
   const propertyNames = [...new Set(blocks.flatMap((block) => Object.keys(block.properties)))].sort()
@@ -1478,6 +1553,7 @@ function BlockEditorModal({
                     onContainerItemChange={(index, item) => onContainerItemChange(blockKey, index, item)}
                     onAddContainerItem={() => onAddContainerItem(blockKey)}
                     onRemoveContainerItem={(index) => onRemoveContainerItem(blockKey, index)}
+                    itemIdSuggestions={itemIdSuggestions}
                   />
                 </div>
               )
@@ -1498,12 +1574,23 @@ interface PlacementModalProps {
   readonly dialog: PlacementDialog
   readonly structure: LoadedStructure
   readonly overlaps: boolean
+  readonly blockNameSuggestions: readonly string[]
+  readonly detectedBlockCapabilities: Readonly<Record<string, BlockEntityCapability>>
   readonly onClose: () => void
   readonly onPositionChange: (position: BlockPosition) => void
   readonly onApply: (block: RenderableBlock, mode: PlacementDialog['mode']) => void
 }
 
-function PlacementModal({ dialog, structure, overlaps, onClose, onPositionChange, onApply }: PlacementModalProps): ReactElement {
+function PlacementModal({
+  dialog,
+  structure,
+  overlaps,
+  blockNameSuggestions,
+  detectedBlockCapabilities,
+  onClose,
+  onPositionChange,
+  onApply
+}: PlacementModalProps): ReactElement {
   const position = dialog.position
   const [blockName, setBlockName] = useState(dialog.sourceBlock?.name ?? 'minecraft:stone')
   const [facing, setFacing] = useState(dialog.sourceBlock?.properties.facing ?? 'north')
@@ -1512,14 +1599,43 @@ function PlacementModal({ dialog, structure, overlaps, onClose, onPositionChange
   const [containerMode, setContainerMode] = useState<ContainerMode>(dialog.sourceBlock?.blockEntity?.containerMode ?? 'lootTable')
   const [lootTable, setLootTable] = useState(dialog.sourceBlock?.blockEntity?.fields.LootTable ?? '')
   const [jigsawName, setJigsawName] = useState(dialog.sourceBlock?.blockEntity?.fields.name ?? '')
+  const [assetCapability, setAssetCapability] = useState<{ readonly blockName: string; readonly capability: BlockEntityCapability | null } | null>(null)
 
   const supportsFacing = blockSupportsFacing(blockName)
   const supportsOrientation = blockSupportsOrientation(blockName)
-  const capabilities = getBlockCapabilities(blockName, structure)
+  const normalizedBlockName = normalizeBlockName(blockName).toLowerCase()
+  const structureCapability = getBlockCapabilities(blockName, structure, detectedBlockCapabilities)
+  const capabilities =
+    structureCapability ?? (assetCapability?.blockName === normalizedBlockName ? assetCapability.capability : null)
   const blockEntityKind = capabilities?.kind ?? null
   const effectiveContainerMode = capabilities?.supportsLootTable === false ? 'items' : containerMode
   const canHaveBlockEntity = blockEntityKind !== null
   const title = dialog.mode === 'add' ? 'Add block' : 'Transform block'
+
+  useEffect(() => {
+    if (structureCapability) {
+      return undefined
+    }
+
+    let isMounted = true
+    setAssetCapability(null)
+    window.frameLens
+      .detectBlockCapability(normalizedBlockName)
+      .then((capability) => {
+        if (isMounted) {
+          setAssetCapability({ blockName: normalizedBlockName, capability })
+        }
+      })
+      .catch(() => {
+        if (isMounted) {
+          setAssetCapability({ blockName: normalizedBlockName, capability: null })
+        }
+      })
+
+    return () => {
+      isMounted = false
+    }
+  }, [normalizedBlockName, structureCapability])
 
   function setAxis(axis: 0 | 1 | 2, value: number): void {
     const next: [number, number, number] = [...position]
@@ -1543,7 +1659,10 @@ function PlacementModal({ dialog, structure, overlaps, onClose, onPositionChange
       name: normalizedName,
       properties
     }
-    const defaultBlockEntity = withBlockEntity ? createDefaultBlockEntity(baseBlock, structure, effectiveContainerMode) : null
+    const capabilityOverrides = capabilities
+      ? { ...detectedBlockCapabilities, [normalizedName.toLowerCase()]: capabilities }
+      : detectedBlockCapabilities
+    const defaultBlockEntity = withBlockEntity ? createDefaultBlockEntity(baseBlock, structure, capabilityOverrides, effectiveContainerMode) : null
     const blockEntity = defaultBlockEntity?.kind === 'jigsaw'
       ? {
           ...defaultBlockEntity,
@@ -1580,7 +1699,7 @@ function PlacementModal({ dialog, structure, overlaps, onClose, onPositionChange
         <div className="placement-grid">
           <label className="field-label placement-block-field">
             <span>Block</span>
-            <input className="search-input" value={blockName} onChange={(event) => setBlockName(event.target.value)} />
+            <BlockNameAutocomplete value={blockName} suggestions={blockNameSuggestions} onChange={setBlockName} />
           </label>
           <div className="coordinate-grid">
             {(['X', 'Y', 'Z'] as const).map((label, index) => (
@@ -1662,6 +1781,149 @@ function PlacementModal({ dialog, structure, overlaps, onClose, onPositionChange
       </div>
     </div>
   )
+}
+
+interface BlockNameAutocompleteProps {
+  readonly value: string
+  readonly suggestions: readonly string[]
+  readonly onChange: (value: string) => void
+}
+
+function BlockNameAutocomplete({ value, suggestions, onChange }: BlockNameAutocompleteProps): ReactElement {
+  return <ResourceIdAutocomplete ariaLabel="Block" value={value} suggestions={suggestions} onChange={onChange} />
+}
+
+interface ResourceIdAutocompleteProps {
+  readonly ariaLabel: string
+  readonly value: string
+  readonly suggestions: readonly string[]
+  readonly className?: string
+  readonly onChange: (value: string) => void
+  readonly onCommit?: (value: string) => void
+}
+
+function ResourceIdAutocomplete({ ariaLabel, value, suggestions, className = '', onChange, onCommit }: ResourceIdAutocompleteProps): ReactElement {
+  const [isOpen, setIsOpen] = useState(false)
+  const [highlightedIndex, setHighlightedIndex] = useState(0)
+  const options = useMemo(() => filterBlockNameSuggestions(suggestions, value), [suggestions, value])
+
+  function chooseOption(option: string): void {
+    onChange(option)
+    onCommit?.(option)
+    setIsOpen(false)
+    setHighlightedIndex(0)
+  }
+
+  function handleKeyDown(event: KeyboardEvent<HTMLInputElement>): void {
+    if (!isOpen && (event.key === 'ArrowDown' || event.key === 'ArrowUp') && options.length > 0) {
+      setIsOpen(true)
+      event.preventDefault()
+      return
+    }
+
+    if (!isOpen || options.length === 0) {
+      return
+    }
+
+    if (event.key === 'ArrowDown') {
+      setHighlightedIndex((current) => (current + 1) % options.length)
+      event.preventDefault()
+    } else if (event.key === 'ArrowUp') {
+      setHighlightedIndex((current) => (current - 1 + options.length) % options.length)
+      event.preventDefault()
+    } else if (event.key === 'Enter') {
+      const option = options[highlightedIndex] ?? options[0]
+      if (option) {
+        chooseOption(option)
+      }
+      event.preventDefault()
+    } else if (event.key === 'Escape') {
+      setIsOpen(false)
+      event.preventDefault()
+    }
+  }
+
+  return (
+    <div className="autocomplete-field">
+      <input
+        aria-label={ariaLabel}
+        className={className ? `search-input ${className}` : 'search-input'}
+        value={value}
+        onChange={(event) => {
+          onChange(event.target.value)
+          setIsOpen(true)
+          setHighlightedIndex(0)
+        }}
+        onFocus={() => setIsOpen(true)}
+        onBlur={(event) => onCommit?.(event.currentTarget.value)}
+        onKeyDown={handleKeyDown}
+        autoComplete="off"
+      />
+      {isOpen && options.length > 0 && (
+        <div className="autocomplete-menu" role="listbox">
+          {options.map((option, index) => (
+            <button
+              className="autocomplete-option"
+              type="button"
+              role="option"
+              aria-selected={index === highlightedIndex}
+              key={option}
+              onMouseDown={(event) => {
+                event.preventDefault()
+                chooseOption(option)
+              }}
+              onMouseEnter={() => setHighlightedIndex(index)}
+            >
+              {option}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function createBlockNameSuggestions(structure: LoadedStructure | undefined, detectedBlockIds: readonly string[]): readonly string[] {
+  const ids = new Set<string>(detectedBlockIds)
+  for (const paletteEntry of structure?.palette ?? []) {
+    ids.add(paletteEntry.name)
+  }
+  for (const block of structure?.blocks ?? []) {
+    ids.add(block.name)
+  }
+
+  return [...ids].sort((left, right) => left.localeCompare(right))
+}
+
+function createItemIdSuggestions(
+  structure: LoadedStructure | undefined,
+  detectedBlockIds: readonly string[],
+  detectedItemIds: readonly string[]
+): readonly string[] {
+  const ids = new Set<string>([...detectedBlockIds, ...detectedItemIds])
+  for (const block of structure?.blocks ?? []) {
+    ids.add(block.name)
+    for (const item of block.blockEntity?.items ?? []) {
+      ids.add(item.id)
+    }
+  }
+
+  return [...ids].sort((left, right) => left.localeCompare(right))
+}
+
+function filterBlockNameSuggestions(suggestions: readonly string[], value: string): readonly string[] {
+  const query = value.trim().toLowerCase()
+  if (query.length === 0) {
+    return []
+  }
+
+  return suggestions
+    .filter((suggestion) => {
+      const normalized = suggestion.toLowerCase()
+      const path = normalized.includes(':') ? normalized.split(':').slice(1).join(':') : normalized
+      return normalized.includes(query) || path.includes(query)
+    })
+    .slice(0, 10)
 }
 
 function formatBytes(bytes: number): string {
@@ -1928,10 +2190,19 @@ function blockSupportsOrientation(blockName: string): boolean {
   return normalizeBlockName(blockName).toLowerCase().includes('jigsaw')
 }
 
-function getBlockCapabilities(blockName: string, structure: LoadedStructure): BlockEntityCapability | null {
+function getBlockCapabilities(
+  blockName: string,
+  structure: LoadedStructure,
+  detectedCapabilities: Readonly<Record<string, BlockEntityCapability>>
+): BlockEntityCapability | null {
   const normalized = normalizeBlockName(blockName).toLowerCase()
+  const detectedCapability = detectedCapabilities[normalized] ?? getKnownBlockEntityCapability(normalized)
   const knownBlock = structure.blocks.find((block) => block.name.toLowerCase() === normalized && block.blockEntity)
   if (knownBlock?.blockEntity) {
+    if (detectedCapability?.kind === 'container' && knownBlock.blockEntity.kind !== 'container') {
+      return detectedCapability
+    }
+
     const knownCapability = getKnownBlockEntityCapability(normalized)
     return {
       kind: knownBlock.blockEntity.kind,
@@ -1939,11 +2210,56 @@ function getBlockCapabilities(blockName: string, structure: LoadedStructure): Bl
     }
   }
 
-  return getKnownBlockEntityCapability(normalized)
+  return detectedCapability
 }
 
-function createDefaultBlockEntity(block: RenderableBlock, structure: LoadedStructure, preferredMode?: ContainerMode): RenderableBlock['blockEntity'] | null {
-  const capabilities = getBlockCapabilities(block.name, structure)
+function shouldUpdateBlockEntityForCapabilities(
+  block: RenderableBlock,
+  structure: LoadedStructure,
+  detectedCapabilities: Readonly<Record<string, BlockEntityCapability>>
+): boolean {
+  const capabilities = getBlockCapabilities(block.name, structure, detectedCapabilities)
+  if (!capabilities) {
+    return false
+  }
+
+  return !block.blockEntity || (capabilities.kind === 'container' && block.blockEntity.kind !== 'container')
+}
+
+function getUpdatedBlockEntityForCapabilities(
+  block: RenderableBlock,
+  structure: LoadedStructure,
+  detectedCapabilities: Readonly<Record<string, BlockEntityCapability>>
+): RenderableBlock['blockEntity'] | null {
+  const capabilities = getBlockCapabilities(block.name, structure, detectedCapabilities)
+  if (!capabilities) {
+    return block.blockEntity ?? null
+  }
+
+  if (!block.blockEntity) {
+    return createDefaultBlockEntity(block, structure, detectedCapabilities)
+  }
+
+  if (capabilities.kind === 'container' && block.blockEntity.kind !== 'container') {
+    const containerMode = capabilities.supportsLootTable && block.blockEntity.fields.LootTable ? 'lootTable' : 'items'
+    return {
+      ...block.blockEntity,
+      kind: 'container',
+      containerMode,
+      ...(containerMode === 'items' ? { items: block.blockEntity.items ?? [] } : {})
+    }
+  }
+
+  return block.blockEntity
+}
+
+function createDefaultBlockEntity(
+  block: RenderableBlock,
+  structure: LoadedStructure,
+  detectedCapabilities: Readonly<Record<string, BlockEntityCapability>>,
+  preferredMode?: ContainerMode
+): RenderableBlock['blockEntity'] | null {
+  const capabilities = getBlockCapabilities(block.name, structure, detectedCapabilities)
   if (!capabilities) {
     return null
   }

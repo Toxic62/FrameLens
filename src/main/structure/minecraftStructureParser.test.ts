@@ -80,6 +80,24 @@ describe('parseMinecraftStructure', () => {
     })
   })
 
+  it('infers storage-like modded block entities as editable containers', async () => {
+    const data = await writeStructureFixture({
+      size: [1, 1, 1],
+      palette: [{ Name: 'create:item_vault' }],
+      blocks: [{ pos: [0, 0, 0], state: 0, nbt: { id: 'create:item_vault' } }],
+      entities: []
+    })
+
+    const structure = await parseMinecraftStructure({ fileName: 'item-vault.nbt', byteSize: data.byteLength, data })
+
+    expect(structure.blocks[0]?.blockEntity).toMatchObject({
+      id: 'create:item_vault',
+      kind: 'container',
+      containerMode: 'items',
+      items: []
+    })
+  })
+
   it('keeps editable jigsaw block entity fields', async () => {
     const data = await writeStructureFixture({
       size: [1, 1, 1],
