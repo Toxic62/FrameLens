@@ -46,21 +46,21 @@ Milestone 1 intentionally does not bundle Minecraft assets, execute mod code, sc
 
 - Parses simple block entity NBT from structure blocks and exposes editable string/number fields in the inspector.
 - Jigsaw block entities expose name, target, pool, final state, joint, and priority fields for in-memory editing.
-- Container-like block entities expose loot table and loot seed fields for in-memory editing.
+- Container-like block entities expose either loot table fields or editable item slots, depending on what was loaded from NBT.
 - Block properties can be edited from known option lists for common Minecraft properties such as facing, orientation, axis, slab type, stair shape, waterlogged, level, and rotation.
 - The grouped block list is visible by default, searchable, can highlight a whole group in the viewport, and can expand to select one or more individual blocks.
 - Block property and block entity edits open in a modal editor instead of expanding the left panel.
 - Textured rendering consumes simple Minecraft model elements and face UVs, so slab, stair, and grindstone-style blocks render as model cuboids with better texture placement.
-- Minecraft chests render as simple textured debug cubes until dedicated block entity models are supported.
+- Minecraft chests render with vanilla entity chest textures on a simplified chest cuboid until dedicated block entity models are supported.
 
 ## Milestone 6
 
-- Toolbar commands for opening structures, exporting structures, selecting an instance folder, undo, redo, adding blocks, transforming blocks, and deleting selected blocks.
+- Toolbar commands for opening structures, exporting structures, selecting an instance folder, fit/reset, render mode, undo, redo, adding blocks, transforming blocks, and deleting selected blocks.
 - In-memory undo/redo for structure edits.
 - Multi-select actions from the grouped block list.
 - Delete selected blocks, add a block by nudging from an existing coordinate, and transform a selected block into another block.
 - Export the edited normalized structure back to `.nbt` through Electron main.
-- Collapsible left-panel sections for structure, viewport, assets, clipping, selection, blocks, and entities.
+- Collapsible left-panel sections for structure, assets, clipping, selection, blocks, and entities.
 
 ## Architecture Notes
 
@@ -96,6 +96,12 @@ Run validation:
 npm run typecheck
 npm test
 npm run build
+```
+
+The slow local Astralis asset smoke test is opt-in:
+
+```bash
+FRAMELENS_RUN_ASTRALIS_TEST=true npm test
 ```
 
 ## Safety Boundaries

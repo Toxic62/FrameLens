@@ -48,4 +48,46 @@ describe('exportMinecraftStructure', () => {
       }
     })
   })
+
+  it('writes item-backed container block entities', async () => {
+    const structure: LoadedStructure = {
+      metadata: {
+        fileName: 'items.nbt',
+        byteSize: 0,
+        paletteCount: 1,
+        blockCount: 1,
+        blockEntityCount: 1,
+        entityCount: 0
+      },
+      dimensions: { x: 1, y: 1, z: 1 },
+      palette: [{ index: 0, name: 'minecraft:barrel', properties: {} }],
+      blocks: [
+        {
+          position: [0, 0, 0],
+          state: 0,
+          name: 'minecraft:barrel',
+          properties: {},
+          blockEntity: {
+            id: 'minecraft:barrel',
+            kind: 'container',
+            containerMode: 'items',
+            position: [0, 0, 0],
+            items: [{ slot: 7, id: 'minecraft:diamond', count: 4 }],
+            fields: { LootTable: 'minecraft:chests/simple_dungeon' }
+          }
+        }
+      ],
+      entities: []
+    }
+
+    const buffer = exportMinecraftStructure(structure)
+    const parsed = await parseMinecraftStructure({ fileName: 'items.nbt', byteSize: buffer.byteLength, data: buffer })
+
+    expect(parsed.blocks[0]?.blockEntity).toMatchObject({
+      kind: 'container',
+      containerMode: 'items',
+      items: [{ slot: 7, id: 'minecraft:diamond', count: 4 }],
+      fields: {}
+    })
+  })
 })

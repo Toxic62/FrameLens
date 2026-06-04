@@ -154,6 +154,13 @@ h1 {
   color: #ffb4a8;
 }
 
+.warning-copy {
+  margin: 0;
+  color: #ffd2a6;
+  font-size: 0.95rem;
+  line-height: 1.5;
+}
+
 .metadata-grid {
   display: grid;
   gap: 12px;
@@ -234,6 +241,15 @@ h1 {
   border: 1px solid #2d3740;
   border-radius: 6px;
   background: #11171c;
+}
+
+.segmented-control.two-up {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.toolbar-segments {
+  width: 246px;
+  min-height: 32px;
 }
 
 .segment-button {
@@ -562,6 +578,47 @@ h1 {
   height: 100%;
 }
 
+.direction-indicator {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 4;
+  display: grid;
+  grid-template-areas:
+    ". n ."
+    "w . e"
+    ". s .";
+  grid-template-columns: 44px 44px 44px;
+  grid-template-rows: 26px 26px 26px;
+  align-items: center;
+  justify-items: center;
+  border: 1px solid rgb(132 216 175 / 35%);
+  border-radius: 8px;
+  padding: 6px;
+  color: #dce6ee;
+  background: rgb(17 23 28 / 72%);
+  font-size: 0.72rem;
+  font-weight: 700;
+  pointer-events: none;
+}
+
+.direction-north {
+  grid-area: n;
+  color: #84d8af;
+}
+
+.direction-east {
+  grid-area: e;
+}
+
+.direction-south {
+  grid-area: s;
+}
+
+.direction-west {
+  grid-area: w;
+}
+
 .modal-layer {
   position: fixed;
   inset: 48px 0 0;
@@ -673,6 +730,30 @@ h1 {
   font-size: 0.9rem;
 }
 
+.container-items-editor {
+  display: grid;
+  gap: 10px;
+}
+
+.container-item-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.container-item-list li {
+  display: grid;
+  grid-template-columns: 72px minmax(140px, 1fr) 78px 28px;
+  gap: 8px;
+  align-items: end;
+}
+
+.item-id-field {
+  min-width: 0;
+}
+
 .viewport-placeholder {
   position: absolute;
   inset: 0;
@@ -717,5 +798,18 @@ h1 {
 
   .placement-layer {
     padding: 0 10px 10px;
+  }
+
+  .toolbar-segments,
+  .container-item-list li {
+    width: 100%;
+    grid-template-columns: 1fr;
+  }
+
+  .direction-indicator {
+    right: 8px;
+    top: 8px;
+    transform: scale(0.86);
+    transform-origin: top right;
   }
 }

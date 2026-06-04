@@ -79,6 +79,29 @@ describe('assetService', () => {
     expect(result.assets['minecraft:stone']?.faces?.north).toMatch(/^data:image\/png;base64,/)
   })
 
+  it('uses entity chest textures instead of plank fallback for chests', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'framelens-chest-instance-'))
+    await writeFile(join(root, 'minecraftinstance.json'), JSON.stringify({ minecraftVersion: '1.20.1' }))
+
+    await activateAssetRootPath(root)
+    const result = await resolveBlockAssets([{ blockName: 'minecraft:chest', properties: { facing: 'north' } }])
+    const asset = result.assets['minecraft:chest[facing=north]']
+
+    expect(asset).toMatchObject({
+      assetKey: 'minecraft:chest[facing=north]',
+      status: 'textured-cube',
+      elements: [
+        {
+          from: [1, 0, 1],
+          to: [15, 14, 15],
+          uvSize: [64, 64],
+          uvs: expect.objectContaining({ north: [14, 33, 28, 47] })
+        }
+      ]
+    })
+    expect(asset?.faces?.north).toBe(`data:image/png;base64,${Buffer.concat([PNG_1X1, Buffer.from('chest')]).toString('base64')}`)
+  })
+
   it('selects simple blockstate variants using palette properties', async () => {
     const root = await mkdtemp(join(tmpdir(), 'framelens-variant-assets-'))
     await mkdir(join(root, 'kubejs', 'assets', 'minecraft', 'blockstates'), { recursive: true })
@@ -214,7 +237,7 @@ describe('assetService', () => {
     })
   })
 
-  it.runIf(process.env.CI !== 'true')(
+  it.runIf(process.env.FRAMELENS_RUN_ASTRALIS_TEST === 'true')(
     'resolves a read-only block asset from the Astralis instance when present',
     async () => {
       const root = '/Users/yuuto/Documents/astralis'
@@ -243,5 +266,8 @@ async function createVanillaClientJar(): Promise<Buffer> {
     JSON.stringify({ parent: 'minecraft:block/cube_all', textures: { all: 'minecraft:block/stone' } })
   )
   zip.file('assets/minecraft/textures/block/stone.png', PNG_1X1)
+  zip.file('assets/minecraft/textures/entity/chest/normal.png', Buffer.concat([PNG_1X1, Buffer.from('chest')]))
+  zip.file('assets/minecraft/textures/entity/chest/trapped.png', Buffer.concat([PNG_1X1, Buffer.from('trapped-chest')]))
+  zip.file('assets/minecraft/textures/entity/chest/ender.png', Buffer.concat([PNG_1X1, Buffer.from('ender-chest')]))
   return Buffer.from(await zip.generateAsync({ type: 'uint8array' }))
 }

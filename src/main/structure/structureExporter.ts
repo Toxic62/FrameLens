@@ -82,7 +82,20 @@ function toBlockEntityTag(blockEntity: BlockEntitySummary): NbtTag {
   }
 
   for (const [key, value] of Object.entries(blockEntity.fields)) {
+    if (blockEntity.kind === 'container' && blockEntity.containerMode === 'items' && (key === 'LootTable' || key === 'LootTableSeed')) {
+      continue
+    }
     fields[key] = inferPrimitiveTag(value)
+  }
+
+  if (blockEntity.kind === 'container' && blockEntity.containerMode === 'items') {
+    fields.Items = compoundList(
+      (blockEntity.items ?? []).map((item) => ({
+        Slot: byteTag(item.slot),
+        id: stringTag(item.id),
+        Count: byteTag(item.count)
+      }))
+    )
   }
 
   return compound(fields)
@@ -113,6 +126,10 @@ function intList(value: readonly number[]): NbtTag {
 
 function intTag(value: number): NbtTag {
   return { type: 'int', value }
+}
+
+function byteTag(value: number): NbtTag {
+  return { type: 'byte', value }
 }
 
 function stringTag(value: string): NbtTag {

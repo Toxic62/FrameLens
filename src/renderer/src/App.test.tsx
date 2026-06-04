@@ -66,6 +66,31 @@ describe('App', () => {
     })
   })
 
+  it('keeps viewport controls in the toolbar and shows bottom placement overlap state', async () => {
+    window.frameLens = createApiMock({ currentStructure: createStructure() })
+
+    render(<App />)
+
+    expect(await screen.findByText('restored.nbt')).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Viewport' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Fit' })).toBeInTheDocument()
+    expect(screen.getAllByRole('button', { name: 'Reset' })[0]).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+
+    expect(screen.getByRole('dialog', { name: 'Add block' })).toBeInTheDocument()
+    expect(screen.getByText('Placement 0, 0, 0')).toBeInTheDocument()
+    expect(screen.getByText('This placement overlaps an existing block.')).toBeInTheDocument()
+    await waitFor(() => {
+      const lastProps = viewportSpy.mock.calls.at(-1)?.[0] as {
+        placementPreviewPosition: readonly number[] | null
+        placementPreviewOverlaps: boolean
+      }
+      expect(lastProps.placementPreviewPosition).toEqual([0, 0, 0])
+      expect(lastProps.placementPreviewOverlaps).toBe(true)
+    })
+  })
+
   it('keeps the current structure visible when opening is cancelled', async () => {
     const openStructureFile = vi.fn().mockResolvedValue({ ok: false, reason: 'cancelled' })
     window.frameLens = createApiMock({
@@ -154,6 +179,51 @@ describe('App', () => {
       const lastProps = viewportSpy.mock.calls.at(-1)?.[0] as { highlightedBlockKeys: readonly string[] }
       expect(lastProps.highlightedBlockKeys).toEqual(['0,0,0'])
     })
+  })
+
+  it('edits item-backed container block entities', async () => {
+    window.frameLens = createApiMock({
+      currentStructure: {
+        metadata: {
+          fileName: 'barrel.nbt',
+          byteSize: 256,
+          paletteCount: 1,
+          blockCount: 1,
+          blockEntityCount: 1,
+          entityCount: 0
+        },
+        dimensions: { x: 1, y: 1, z: 1 },
+        palette: [{ index: 0, name: 'minecraft:barrel', properties: {} }],
+        blocks: [
+          {
+            position: [0, 0, 0],
+            state: 0,
+            name: 'minecraft:barrel',
+            properties: {},
+            blockEntity: {
+              id: 'minecraft:barrel',
+              kind: 'container',
+              containerMode: 'items',
+              position: [0, 0, 0],
+              items: [{ slot: 3, id: 'minecraft:diamond', count: 12 }],
+              fields: {}
+            }
+          }
+        ],
+        entities: []
+      }
+    })
+
+    render(<App />)
+
+    expect(await screen.findByText('barrel.nbt')).toBeInTheDocument()
+    fireEvent.click(screen.getByText('barrel').closest('button')!)
+    fireEvent.click(screen.getByRole('button', { name: 'Edit block data' }))
+    expect(screen.getByRole('button', { name: 'Items' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByDisplayValue('minecraft:diamond')).toBeInTheDocument()
+    expect(screen.getByDisplayValue('12')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Loot table' }))
+    expect(screen.getByRole('button', { name: 'Loot table' })).toHaveAttribute('aria-pressed', 'true')
   })
 })
 

@@ -646,14 +646,18 @@ async function resolveSpecialBlockAsset(assetKey: string, block: BlockAssetReque
     return null
   }
 
-  const fallbackTexture = normalized.includes('ender_chest') ? 'minecraft:block/obsidian' : 'minecraft:block/oak_planks'
+  const chestTexture = normalized.includes('ender_chest')
+    ? 'minecraft:entity/chest/ender'
+    : normalized.includes('trapped_chest')
+      ? 'minecraft:entity/chest/trapped'
+      : 'minecraft:entity/chest/normal'
   const faces = await loadFaceTextures(activeSource, {
-    up: fallbackTexture,
-    down: fallbackTexture,
-    north: fallbackTexture,
-    south: fallbackTexture,
-    east: fallbackTexture,
-    west: fallbackTexture
+    up: chestTexture,
+    down: chestTexture,
+    north: chestTexture,
+    south: chestTexture,
+    east: chestTexture,
+    west: chestTexture
   })
 
   if (!faces) {
@@ -667,9 +671,24 @@ async function resolveSpecialBlockAsset(assetKey: string, block: BlockAssetReque
     status: 'textured-cube',
     sourceName: activeSource.name,
     faces,
-    elements: [{ from: [0, 0, 0], to: [16, 14, 16], faces }],
+    elements: [
+      {
+        from: [1, 0, 1],
+        to: [15, 14, 15],
+        faces,
+        uvSize: [64, 64],
+        uvs: {
+          up: [14, 0, 28, 14],
+          down: [28, 19, 42, 33],
+          north: [14, 33, 28, 47],
+          south: [14, 14, 28, 28],
+          east: [0, 33, 14, 47],
+          west: [28, 33, 42, 47]
+        }
+      }
+    ],
     fallbackColor: getFallbackColor(assetKey),
-    warning: 'Using a simple chest debug cube until block entity models are supported.'
+    warning: 'Using entity chest texture on a simplified chest cuboid.'
   }
 }
 

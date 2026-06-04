@@ -53,6 +53,7 @@ export interface BlockModelElement {
   readonly to: ModelCoordinate
   readonly faces: BlockFaceTextures
   readonly uvs?: Readonly<Partial<Record<keyof BlockFaceTextures, ModelUv>>>
+  readonly uvSize?: readonly [width: number, height: number]
 }
 
 export interface ResolvedBlockAsset {

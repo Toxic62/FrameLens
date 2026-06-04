@@ -38,6 +38,7 @@ interface StructureViewportProps {
   readonly selectedBlockKey: string | null
   readonly highlightedBlockKeys: readonly string[]
   readonly placementPreviewPosition: BlockPosition | null
+  readonly placementPreviewOverlaps: boolean
   readonly renderMode: RenderMode
   readonly blockAssets: Readonly<Record<string, ResolvedBlockAsset>>
   readonly viewportCommand: ViewportCommand | null
@@ -56,6 +57,7 @@ interface ViewportState {
   readonly controls: OrbitControls
   blockMeshes: readonly BlockMeshRecord[]
   placementPreviewMesh: Mesh | null
+  selectionOverlayMesh: InstancedMesh | null
   structureDimensions: StructureDimensions
   renderPaused: boolean
 }
@@ -102,6 +104,7 @@ export function StructureViewport({
   selectedBlockKey,
   highlightedBlockKeys,
   placementPreviewPosition,
+  placementPreviewOverlaps,
   renderMode,
   blockAssets,
   viewportCommand,
@@ -160,6 +163,7 @@ export function StructureViewport({
       controls,
       blockMeshes: [],
       placementPreviewMesh: null,
+      selectionOverlayMesh: null,
       structureDimensions: DEFAULT_DIMENSIONS,
       renderPaused: false
     }
@@ -240,6 +244,7 @@ export function StructureViewport({
       renderer.domElement.removeEventListener('webglcontextrestored', handleContextRestored)
       removeBlocks(viewportRef.current)
       removePlacementPreview(viewportRef.current)
+      removeSelectionOverlay(viewportRef.current)
       controls.dispose()
       renderer.dispose()
       renderer.domElement.remove()
@@ -255,8 +260,9 @@ export function StructureViewport({
 
     viewport.structureDimensions = structure?.dimensions ?? DEFAULT_DIMENSIONS
     updateBlocks(viewport, { visibleBlocks, selectedBlockKey, highlightedBlockKeys: new Set(highlightedBlockKeys), renderMode, blockAssets })
-    updatePlacementPreview(viewport, structure ? placementPreviewPosition : null)
-  }, [blockAssets, highlightedBlockKeys, placementPreviewPosition, renderMode, selectedBlockKey, structure, visibleBlocks])
+    updateSelectionOverlay(viewport, visibleBlocks, new Set(highlightedBlockKeys))
+    updatePlacementPreview(viewport, structure ? placementPreviewPosition : null, placementPreviewOverlaps)
+  }, [blockAssets, highlightedBlockKeys, placementPreviewOverlaps, placementPreviewPosition, renderMode, selectedBlockKey, structure, visibleBlocks])
 
   useEffect(() => {
     const viewport = viewportRef.current
@@ -279,6 +285,12 @@ export function StructureViewport({
 
   return (
     <div className="viewport-frame" ref={containerRef}>
+      <div className="direction-indicator" aria-label="World directions">
+        <span className="direction-north">N -Z</span>
+        <span className="direction-east">E +X</span>
+        <span className="direction-south">S +Z</span>
+        <span className="direction-west">W -X</span>
+      </div>
       {!structure && <div className="viewport-placeholder">No structure loaded</div>}
       {structure && structure.blocks.length === 0 && <div className="viewport-placeholder">No non-air blocks</div>}
       {structure && structure.blocks.length > 0 && visibleBlocks.length === 0 && (
@@ -368,10 +380,10 @@ function createMaterialInfos(
       return elements.map((element) => {
         const geometry = getElementGeometry(element)
         return {
-          signature: `textured:${isSelected ? 'selected' : 'default'}:${geometry.signature}:${getFaceSignature(element.faces)}:${getUvSignature(element.uvs)}`,
+          signature: `textured:${isSelected ? 'selected' : 'default'}:${geometry.signature}:${getFaceSignature(element.faces)}:${getUvSignature(element.uvs)}:${element.uvSize?.join('x') ?? '16x16'}`,
           size: geometry.size,
           offset: geometry.offset,
-          material: createTexturedMaterials(element.faces, tint, element.uvs)
+          material: createTexturedMaterials(element.faces, tint, element.uvs, element.uvSize)
         }
       })
     }
@@ -406,22 +418,28 @@ function createMaterialInfos(
 function createTexturedMaterials(
   faces: BlockFaceTextures,
   color: string,
-  uvs: Readonly<Partial<Record<keyof BlockFaceTextures, ModelUv>>> = {}
+  uvs: Readonly<Partial<Record<keyof BlockFaceTextures, ModelUv>>> = {},
+  uvSize: readonly [width: number, height: number] = [16, 16]
 ): MeshLambertMaterial[] {
   return [
-    createTexturedMaterial(faces.east, color, uvs.east),
-    createTexturedMaterial(faces.west, color, uvs.west),
-    createTexturedMaterial(faces.up, color, uvs.up),
-    createTexturedMaterial(faces.down, color, uvs.down),
-    createTexturedMaterial(faces.south, color, uvs.south),
-    createTexturedMaterial(faces.north, color, uvs.north)
+    createTexturedMaterial(faces.east, color, uvs.east, uvSize),
+    createTexturedMaterial(faces.west, color, uvs.west, uvSize),
+    createTexturedMaterial(faces.up, color, uvs.up, uvSize),
+    createTexturedMaterial(faces.down, color, uvs.down, uvSize),
+    createTexturedMaterial(faces.south, color, uvs.south, uvSize),
+    createTexturedMaterial(faces.north, color, uvs.north, uvSize)
   ]
 }
 
-function createTexturedMaterial(dataUrl: string, color: string, uv?: ModelUv): MeshLambertMaterial {
+function createTexturedMaterial(
+  dataUrl: string,
+  color: string,
+  uv?: ModelUv,
+  uvSize: readonly [width: number, height: number] = [16, 16]
+): MeshLambertMaterial {
   return new MeshLambertMaterial({
     color,
-    map: loadTexture(dataUrl, uv)
+    map: loadTexture(dataUrl, uv, uvSize)
   })
 }
 
@@ -469,8 +487,8 @@ function createColorMaterial(color: string): MeshLambertMaterial {
   })
 }
 
-function loadTexture(dataUrl: string, uv?: ModelUv): Texture {
-  const cacheKey = uv ? `${dataUrl}#${uv.join(',')}` : dataUrl
+function loadTexture(dataUrl: string, uv?: ModelUv, uvSize: readonly [width: number, height: number] = [16, 16]): Texture {
+  const cacheKey = uv ? `${dataUrl}#${uv.join(',')}@${uvSize.join('x')}` : dataUrl
   const cached = textureCache.get(cacheKey)
   if (cached) {
     return cached
@@ -489,8 +507,8 @@ function loadTexture(dataUrl: string, uv?: ModelUv): Texture {
   texture.generateMipmaps = false
   texture.colorSpace = SRGBColorSpace
   if (uv) {
-    texture.repeat.set(Math.max((uv[2] - uv[0]) / 16, 0.001), Math.max((uv[3] - uv[1]) / 16, 0.001))
-    texture.offset.set(uv[0] / 16, 1 - uv[3] / 16)
+    texture.repeat.set(Math.max((uv[2] - uv[0]) / uvSize[0], 0.001), Math.max((uv[3] - uv[1]) / uvSize[1], 0.001))
+    texture.offset.set(uv[0] / uvSize[0], 1 - uv[3] / uvSize[1])
     texture.needsUpdate = true
   }
   textureCache.set(cacheKey, texture)
@@ -535,20 +553,70 @@ function removeBlocks(viewport: ViewportState | null): void {
   viewport.blockMeshes = []
 }
 
-function updatePlacementPreview(viewport: ViewportState, position: BlockPosition | null): void {
+function updateSelectionOverlay(
+  viewport: ViewportState,
+  visibleBlocks: readonly RenderableBlock[],
+  highlightedBlockKeys: ReadonlySet<string>
+): void {
+  removeSelectionOverlay(viewport)
+  const selectedBlocks = visibleBlocks.filter((block) => highlightedBlockKeys.has(getBlockKey(block.position)))
+  if (selectedBlocks.length === 0) {
+    return
+  }
+
+  const geometry = new BoxGeometry(1.06, 1.06, 1.06)
+  const material = new MeshLambertMaterial({
+    color: SELECTED_BLOCK_TINT,
+    transparent: true,
+    opacity: 0.58,
+    depthTest: false,
+    depthWrite: false,
+    wireframe: true
+  })
+  const mesh = new InstancedMesh(geometry, material, selectedBlocks.length)
+  const matrix = new Matrix4()
+  selectedBlocks.forEach((block, index) => {
+    matrix.makeTranslation(block.position[0] + 0.5, block.position[1] + 0.5, block.position[2] + 0.5)
+    mesh.setMatrixAt(index, matrix)
+  })
+  mesh.instanceMatrix.needsUpdate = true
+  mesh.renderOrder = 10
+  viewport.scene.add(mesh)
+  viewport.selectionOverlayMesh = mesh
+}
+
+function removeSelectionOverlay(viewport: ViewportState | null): void {
+  if (!viewport?.selectionOverlayMesh) {
+    return
+  }
+
+  viewport.scene.remove(viewport.selectionOverlayMesh)
+  viewport.selectionOverlayMesh.geometry.dispose()
+  const materials = Array.isArray(viewport.selectionOverlayMesh.material)
+    ? viewport.selectionOverlayMesh.material
+    : [viewport.selectionOverlayMesh.material]
+  for (const material of materials) {
+    material.dispose()
+  }
+  viewport.selectionOverlayMesh = null
+}
+
+function updatePlacementPreview(viewport: ViewportState, position: BlockPosition | null, overlaps: boolean): void {
   removePlacementPreview(viewport)
   if (!position) {
     return
   }
 
   const material = new MeshLambertMaterial({
-    color: SELECTED_BLOCK_TINT,
+    color: overlaps ? '#ff6b5f' : SELECTED_BLOCK_TINT,
     transparent: true,
-    opacity: 0.42,
+    opacity: overlaps ? 0.66 : 0.46,
+    depthTest: false,
     depthWrite: false
   })
   const mesh = new Mesh(new BoxGeometry(1.04, 1.04, 1.04), material)
   mesh.position.set(position[0] + 0.5, position[1] + 0.5, position[2] + 0.5)
+  mesh.renderOrder = 11
   viewport.scene.add(mesh)
   viewport.placementPreviewMesh = mesh
 }

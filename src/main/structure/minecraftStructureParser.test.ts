@@ -39,11 +39,45 @@ describe('parseMinecraftStructure', () => {
           id: 'minecraft:chest',
           kind: 'container',
           position: [1, 0, 0],
+          containerMode: 'lootTable',
+          items: [],
           fields: { LootTable: 'minecraft:chests/simple_dungeon' }
         }
       }
     ])
     expect(structure.entities).toEqual([{ id: 'minecraft:item' }])
+  })
+
+  it('preserves container item summaries for inventory-backed containers', async () => {
+    const data = await writeStructureFixture({
+      size: [1, 1, 1],
+      palette: [{ Name: 'minecraft:barrel' }],
+      blocks: [
+        {
+          pos: [0, 0, 0],
+          state: 0,
+          nbt: {
+            id: 'minecraft:barrel',
+            Items: [
+              { Slot: 3, id: 'minecraft:diamond', Count: 12 },
+              { Slot: 4, id: 'minecraft:apple', Count: 2 }
+            ]
+          }
+        }
+      ],
+      entities: []
+    })
+
+    const structure = await parseMinecraftStructure({ fileName: 'barrel.nbt', byteSize: data.byteLength, data })
+
+    expect(structure.blocks[0]?.blockEntity).toMatchObject({
+      kind: 'container',
+      containerMode: 'items',
+      items: [
+        { slot: 3, id: 'minecraft:diamond', count: 12 },
+        { slot: 4, id: 'minecraft:apple', count: 2 }
+      ]
+    })
   })
 
   it('keeps editable jigsaw block entity fields', async () => {

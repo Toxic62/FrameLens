@@ -22,7 +22,16 @@ import {
 } from 'lucide-react'
 import { createBlockAssetKey } from '@shared/assets'
 import type { AssetScanResult, AssetSourceSummary, BlockAssetRequest, RenderMode, ResolvedBlockAsset } from '@shared/assets'
-import type { BlockEntityKind, BlockPosition, LoadedStructure, OpenStructureResult, RenderableBlock, StructureDimensions } from '@shared/structure'
+import type {
+  BlockEntityKind,
+  BlockPosition,
+  ContainerItemSummary,
+  ContainerMode,
+  LoadedStructure,
+  OpenStructureResult,
+  RenderableBlock,
+  StructureDimensions
+} from '@shared/structure'
 import {
   createDefaultClipBounds,
   getBlockKey,
@@ -41,7 +50,7 @@ type LoadState =
 
 const initialState: LoadState = { status: 'empty' }
 
-type SidebarSectionId = 'structure' | 'viewport' | 'assets' | 'clipping' | 'selection' | 'blocks' | 'entities'
+type SidebarSectionId = 'structure' | 'assets' | 'clipping' | 'selection' | 'blocks' | 'entities'
 type BlockEditorKind = 'properties' | 'data'
 
 interface BlockEditorDialog {
@@ -205,6 +214,14 @@ export default function App(): ReactElement {
     const keys = new Set(editorDialog.blockKeys)
     return structure.blocks.filter((block) => keys.has(getBlockKey(block.position)))
   }, [editorDialog, structure])
+  const placementPreviewOverlaps = useMemo(() => {
+    if (!structure || !placementDialog) {
+      return false
+    }
+
+    const previewKey = getBlockKey(placementDialog.position)
+    return structure.blocks.some((block) => getBlockKey(block.position) === previewKey)
+  }, [placementDialog, structure])
   const activeAssetSource = useMemo(
     () => assetScan.sources.find((source) => source.id === assetScan.activeSourceId),
     [assetScan]
@@ -443,6 +460,87 @@ export default function App(): ReactElement {
     }))
   }
 
+  function updateContainerMode(blockKey: string, mode: ContainerMode): void {
+    updateLoadedStructure((current) => ({
+      ...current,
+      blocks: current.blocks.map((block) =>
+        getBlockKey(block.position) === blockKey && block.blockEntity?.kind === 'container'
+          ? {
+              ...block,
+              blockEntity: {
+                ...block.blockEntity,
+                containerMode: mode,
+                ...(mode === 'items' ? { items: block.blockEntity.items ?? [] } : {})
+              }
+            }
+          : block
+      )
+    }))
+  }
+
+  function updateContainerItem(blockKey: string, index: number, item: ContainerItemSummary): void {
+    updateLoadedStructure((current) => ({
+      ...current,
+      blocks: current.blocks.map((block) => {
+        if (getBlockKey(block.position) !== blockKey || block.blockEntity?.kind !== 'container') {
+          return block
+        }
+
+        const items = [...(block.blockEntity.items ?? [])]
+        items[index] = item
+        return {
+          ...block,
+          blockEntity: {
+            ...block.blockEntity,
+            containerMode: 'items',
+            items
+          }
+        }
+      })
+    }))
+  }
+
+  function addContainerItem(blockKey: string): void {
+    updateLoadedStructure((current) => ({
+      ...current,
+      blocks: current.blocks.map((block) => {
+        if (getBlockKey(block.position) !== blockKey || block.blockEntity?.kind !== 'container') {
+          return block
+        }
+
+        const items = block.blockEntity.items ?? []
+        const usedSlots = new Set(items.map((item) => item.slot))
+        const slot = Array.from({ length: 54 }, (_, index) => index).find((candidate) => !usedSlots.has(candidate)) ?? items.length
+        return {
+          ...block,
+          blockEntity: {
+            ...block.blockEntity,
+            containerMode: 'items',
+            items: [...items, { slot, id: 'minecraft:stone', count: 1 }]
+          }
+        }
+      })
+    }))
+  }
+
+  function removeContainerItem(blockKey: string, index: number): void {
+    updateLoadedStructure((current) => ({
+      ...current,
+      blocks: current.blocks.map((block) =>
+        getBlockKey(block.position) === blockKey && block.blockEntity?.kind === 'container'
+          ? {
+              ...block,
+              blockEntity: {
+                ...block.blockEntity,
+                containerMode: 'items',
+                items: (block.blockEntity.items ?? []).filter((_, itemIndex) => itemIndex !== index)
+              }
+            }
+          : block
+      )
+    }))
+  }
+
   function deleteActionBlocks(): void {
     if (actionBlockKeys.length === 0) {
       return
@@ -545,8 +643,21 @@ export default function App(): ReactElement {
             <FolderOpen aria-hidden="true" size={16} />
             <span>{activeAssetSource ? 'Instance' : 'Select instance'}</span>
           </button>
+          <button className="toolbar-button" type="button" onClick={() => sendViewportCommand('fit')} disabled={!structure}>
+            <Maximize2 aria-hidden="true" size={16} />
+            <span>Fit</span>
+          </button>
+          <button className="toolbar-button" type="button" onClick={() => sendViewportCommand('reset')} disabled={!structure}>
+            <RotateCcw aria-hidden="true" size={16} />
+            <span>Reset</span>
+          </button>
         </div>
         <div className="toolbar-group">
+          <div className="segmented-control toolbar-segments" aria-label="Render mode">
+            <RenderModeButton mode="debug" currentMode={renderMode} onClick={setRenderMode} />
+            <RenderModeButton mode="palette" currentMode={renderMode} onClick={setRenderMode} />
+            <RenderModeButton mode="textured" currentMode={renderMode} onClick={setRenderMode} />
+          </div>
           <button className="toolbar-button icon-label" type="button" onClick={undoEdit} disabled={historyPast.length === 0}>
             <Undo2 aria-hidden="true" size={16} />
             <span>Undo</span>
@@ -596,24 +707,6 @@ export default function App(): ReactElement {
                 <Metadata label="Visible" value={visibleBlocks.length.toLocaleString()} />
                 <Metadata label="Entities" value={structure.metadata.entityCount.toLocaleString()} />
               </dl>
-            </PanelSection>
-
-            <PanelSection id="viewport" title="Viewport" collapsedSections={collapsedSections} onToggle={toggleSection}>
-              <div className="button-row">
-                <button className="tool-button" type="button" onClick={() => sendViewportCommand('fit')}>
-                  <Maximize2 aria-hidden="true" size={16} />
-                  <span>Fit</span>
-                </button>
-                <button className="tool-button" type="button" onClick={() => sendViewportCommand('reset')}>
-                  <RotateCcw aria-hidden="true" size={16} />
-                  <span>Reset</span>
-                </button>
-              </div>
-              <div className="segmented-control" aria-label="Render mode">
-                <RenderModeButton mode="debug" currentMode={renderMode} onClick={setRenderMode} />
-                <RenderModeButton mode="palette" currentMode={renderMode} onClick={setRenderMode} />
-                <RenderModeButton mode="textured" currentMode={renderMode} onClick={setRenderMode} />
-              </div>
             </PanelSection>
 
             <PanelSection id="assets" title="Assets" collapsedSections={collapsedSections} onToggle={toggleSection}>
@@ -707,6 +800,7 @@ export default function App(): ReactElement {
           selectedBlockKey={selectedBlockKey}
           highlightedBlockKeys={highlightedBlockKeys}
           placementPreviewPosition={placementDialog?.position ?? null}
+          placementPreviewOverlaps={placementPreviewOverlaps}
           renderMode={renderMode}
           blockAssets={blockAssets}
           viewportCommand={viewportCommand}
@@ -721,12 +815,17 @@ export default function App(): ReactElement {
           onClose={() => setEditorDialog(null)}
           onPropertyChange={updateBlockProperties}
           onBlockEntityFieldChange={updateBlockEntityFields}
+          onContainerModeChange={updateContainerMode}
+          onContainerItemChange={updateContainerItem}
+          onAddContainerItem={addContainerItem}
+          onRemoveContainerItem={removeContainerItem}
         />
       )}
       {placementDialog && structure && (
         <PlacementModal
           dialog={placementDialog}
           structure={structure}
+          overlaps={placementPreviewOverlaps}
           onClose={() => setPlacementDialog(null)}
           onPositionChange={updatePlacementPosition}
           onApply={applyPlacedBlock}
@@ -1022,12 +1121,36 @@ function PropertyValueEditor({ block, propertyName, value, onChange }: PropertyV
 interface BlockEntityEditorProps {
   readonly block: RenderableBlock
   readonly onFieldChange: (fieldName: string, value: string) => void
+  readonly onContainerModeChange: (mode: ContainerMode) => void
+  readonly onContainerItemChange: (index: number, item: ContainerItemSummary) => void
+  readonly onAddContainerItem: () => void
+  readonly onRemoveContainerItem: (index: number) => void
 }
 
-function BlockEntityEditor({ block, onFieldChange }: BlockEntityEditorProps): ReactElement {
+function BlockEntityEditor({
+  block,
+  onFieldChange,
+  onContainerModeChange,
+  onContainerItemChange,
+  onAddContainerItem,
+  onRemoveContainerItem
+}: BlockEntityEditorProps): ReactElement {
   const blockEntity = block.blockEntity
   if (!blockEntity) {
     return <></>
+  }
+
+  if (blockEntity.kind === 'container') {
+    return (
+      <ContainerBlockEntityEditor
+        block={block}
+        onFieldChange={onFieldChange}
+        onContainerModeChange={onContainerModeChange}
+        onContainerItemChange={onContainerItemChange}
+        onAddContainerItem={onAddContainerItem}
+        onRemoveContainerItem={onRemoveContainerItem}
+      />
+    )
   }
 
   const editableFields = getEditableBlockEntityFields(block)
@@ -1073,6 +1196,114 @@ function BlockEntityEditor({ block, onFieldChange }: BlockEntityEditorProps): Re
   )
 }
 
+interface ContainerBlockEntityEditorProps {
+  readonly block: RenderableBlock
+  readonly onFieldChange: (fieldName: string, value: string) => void
+  readonly onContainerModeChange: (mode: ContainerMode) => void
+  readonly onContainerItemChange: (index: number, item: ContainerItemSummary) => void
+  readonly onAddContainerItem: () => void
+  readonly onRemoveContainerItem: (index: number) => void
+}
+
+function ContainerBlockEntityEditor({
+  block,
+  onFieldChange,
+  onContainerModeChange,
+  onContainerItemChange,
+  onAddContainerItem,
+  onRemoveContainerItem
+}: ContainerBlockEntityEditorProps): ReactElement {
+  const blockEntity = block.blockEntity
+  if (!blockEntity) {
+    return <></>
+  }
+
+  const mode = blockEntity.containerMode ?? (blockEntity.fields.LootTable ? 'lootTable' : 'items')
+  const items = blockEntity.items ?? []
+
+  return (
+    <div className="block-entity-editor">
+      <div className="selection-title">
+        <ListTree aria-hidden="true" size={16} />
+        <span>{blockEntity.id}</span>
+      </div>
+      <div className="segmented-control two-up" aria-label="Container edit mode">
+        <button className="segment-button" type="button" aria-pressed={mode === 'items'} onClick={() => onContainerModeChange('items')}>
+          <span>Items</span>
+        </button>
+        <button className="segment-button" type="button" aria-pressed={mode === 'lootTable'} onClick={() => onContainerModeChange('lootTable')}>
+          <span>Loot table</span>
+        </button>
+      </div>
+      {mode === 'lootTable' ? (
+        <dl className="property-grid">
+          {getEditableBlockEntityFields(block).map((field) => (
+            <div key={field.name}>
+              <dt>{field.label}</dt>
+              <dd>
+                <input
+                  className="search-input compact-input"
+                  value={blockEntity.fields[field.name] ?? ''}
+                  onChange={(event) => onFieldChange(field.name, event.target.value)}
+                />
+              </dd>
+            </div>
+          ))}
+        </dl>
+      ) : (
+        <div className="container-items-editor">
+          {items.length > 0 ? (
+            <ol className="container-item-list">
+              {items.map((item, index) => (
+                <li key={`${item.slot}-${item.id}-${index}`}>
+                  <label className="field-label">
+                    <span>Slot</span>
+                    <input
+                      className="search-input compact-input"
+                      type="number"
+                      min={0}
+                      value={item.slot}
+                      onChange={(event) => onContainerItemChange(index, { ...item, slot: clampInteger(Number(event.target.value), 0, 255) })}
+                    />
+                  </label>
+                  <label className="field-label item-id-field">
+                    <span>Item</span>
+                    <input
+                      className="search-input compact-input"
+                      value={item.id}
+                      onChange={(event) => onContainerItemChange(index, { ...item, id: normalizeItemName(event.target.value) })}
+                    />
+                  </label>
+                  <label className="field-label">
+                    <span>Count</span>
+                    <input
+                      className="search-input compact-input"
+                      type="number"
+                      min={1}
+                      max={127}
+                      value={item.count}
+                      onChange={(event) => onContainerItemChange(index, { ...item, count: clampInteger(Number(event.target.value), 1, 127) })}
+                    />
+                  </label>
+                  <button className="icon-button" type="button" aria-label="Remove item" onClick={() => onRemoveContainerItem(index)}>
+                    <Trash2 aria-hidden="true" size={14} />
+                  </button>
+                </li>
+              ))}
+            </ol>
+          ) : (
+            <p className="state-copy compact">No items in this container.</p>
+          )}
+          <button className="tool-button" type="button" onClick={onAddContainerItem}>
+            <Plus aria-hidden="true" size={16} />
+            <span>Add item</span>
+          </button>
+        </div>
+      )}
+    </div>
+  )
+}
+
 interface BlockEditorModalProps {
   readonly kind: BlockEditorKind
   readonly blocks: readonly RenderableBlock[]
@@ -1080,6 +1311,10 @@ interface BlockEditorModalProps {
   readonly onClose: () => void
   readonly onPropertyChange: (blockKeys: readonly string[], propertyName: string, value: string) => void
   readonly onBlockEntityFieldChange: (blockKeys: readonly string[], fieldName: string, value: string) => void
+  readonly onContainerModeChange: (blockKey: string, mode: ContainerMode) => void
+  readonly onContainerItemChange: (blockKey: string, index: number, item: ContainerItemSummary) => void
+  readonly onAddContainerItem: (blockKey: string) => void
+  readonly onRemoveContainerItem: (blockKey: string, index: number) => void
 }
 
 function BlockEditorModal({
@@ -1088,7 +1323,11 @@ function BlockEditorModal({
   structure,
   onClose,
   onPropertyChange,
-  onBlockEntityFieldChange
+  onBlockEntityFieldChange,
+  onContainerModeChange,
+  onContainerItemChange,
+  onAddContainerItem,
+  onRemoveContainerItem
 }: BlockEditorModalProps): ReactElement {
   const blockKeys = blocks.map((block) => getBlockKey(block.position))
   const propertyNames = [...new Set(blocks.flatMap((block) => Object.keys(block.properties)))].sort()
@@ -1141,7 +1380,14 @@ function BlockEditorModal({
                     <Metadata label="Block" value={block.name} />
                     <Metadata label="Position" value={block.position.join(', ')} />
                   </dl>
-                  <BlockEntityEditor block={block} onFieldChange={(fieldName, nextValue) => onBlockEntityFieldChange([blockKey], fieldName, nextValue)} />
+                  <BlockEntityEditor
+                    block={block}
+                    onFieldChange={(fieldName, nextValue) => onBlockEntityFieldChange([blockKey], fieldName, nextValue)}
+                    onContainerModeChange={(mode) => onContainerModeChange(blockKey, mode)}
+                    onContainerItemChange={(index, item) => onContainerItemChange(blockKey, index, item)}
+                    onAddContainerItem={() => onAddContainerItem(blockKey)}
+                    onRemoveContainerItem={(index) => onRemoveContainerItem(blockKey, index)}
+                  />
                 </div>
               )
             })}
@@ -1160,12 +1406,13 @@ function BlockEditorModal({
 interface PlacementModalProps {
   readonly dialog: PlacementDialog
   readonly structure: LoadedStructure
+  readonly overlaps: boolean
   readonly onClose: () => void
   readonly onPositionChange: (position: BlockPosition) => void
   readonly onApply: (block: RenderableBlock, mode: PlacementDialog['mode']) => void
 }
 
-function PlacementModal({ dialog, structure, onClose, onPositionChange, onApply }: PlacementModalProps): ReactElement {
+function PlacementModal({ dialog, structure, overlaps, onClose, onPositionChange, onApply }: PlacementModalProps): ReactElement {
   const position = dialog.position
   const [blockName, setBlockName] = useState(dialog.sourceBlock?.name ?? 'minecraft:stone')
   const [facing, setFacing] = useState(dialog.sourceBlock?.properties.facing ?? 'north')
@@ -1261,6 +1508,7 @@ function PlacementModal({ dialog, structure, onClose, onPositionChange, onApply 
             <button className="tool-button" type="button" onClick={() => setAxis(2, position[2] + 1)}>+Z</button>
           </div>
         </div>
+        {overlaps && <p className="warning-copy compact">This placement overlaps an existing block.</p>}
         {supportsFacing && (
           <label className="field-label">
             <span>Facing</span>
@@ -1530,6 +1778,14 @@ function getFileName(filePath: string): string {
 
 function normalizeBlockName(blockName: string): string {
   const trimmed = blockName.trim()
+  if (trimmed.length === 0) {
+    return 'minecraft:air'
+  }
+  return trimmed.includes(':') ? trimmed : `minecraft:${trimmed}`
+}
+
+function normalizeItemName(itemName: string): string {
+  const trimmed = itemName.trim()
   if (trimmed.length === 0) {
     return 'minecraft:air'
   }

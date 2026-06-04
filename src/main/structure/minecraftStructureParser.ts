@@ -3,6 +3,7 @@ import type {
   BlockEntityKind,
   BlockEntitySummary,
   BlockPosition,
+  ContainerItemSummary,
   EntitySummary,
   LoadedStructure,
   PaletteEntry,
@@ -122,12 +123,34 @@ function readBlockEntity(value: NbtValue, blockName: string, position: BlockPosi
 
   const record = asRecord(value, 'block nbt')
   const id = typeof record.id === 'string' ? record.id : blockName
+  const kind = inferBlockEntityKind(id, blockName, record)
+  const items = kind === 'container' ? readContainerItems(record.Items) : []
   return {
     id,
-    kind: inferBlockEntityKind(id, blockName, record),
+    kind,
     position,
+    ...(kind === 'container'
+      ? {
+          containerMode: items.length > 0 || record.LootTable === undefined ? 'items' : 'lootTable',
+          items
+        }
+      : {}),
     fields: readEditableBlockEntityFields(record)
   }
+}
+
+function readContainerItems(value: NbtValue): readonly ContainerItemSummary[] {
+  if (value === undefined) {
+    return []
+  }
+
+  return asArray(value, 'block nbt.Items').flatMap((entry, index) => {
+    const record = asRecord(entry, `block nbt.Items[${index}]`)
+    const id = typeof record.id === 'string' ? record.id : null
+    const slot = typeof record.Slot === 'number' ? record.Slot : null
+    const count = typeof record.Count === 'number' ? record.Count : 1
+    return id !== null && slot !== null ? [{ slot, id, count }] : []
+  })
 }
 
 function readEditableBlockEntityFields(record: NbtRecord): Record<string, string> {

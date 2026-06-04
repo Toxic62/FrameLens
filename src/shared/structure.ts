@@ -13,11 +13,20 @@ export interface PaletteEntry {
 }
 
 export type BlockEntityKind = 'jigsaw' | 'container' | 'generic'
+export type ContainerMode = 'lootTable' | 'items'
+
+export interface ContainerItemSummary {
+  readonly slot: number
+  readonly id: string
+  readonly count: number
+}
 
 export interface BlockEntitySummary {
   readonly id: string
   readonly kind: BlockEntityKind
   readonly position: BlockPosition
+  readonly containerMode?: ContainerMode
+  readonly items?: readonly ContainerItemSummary[]
   readonly fields: Readonly<Record<string, string>>
 }
 
