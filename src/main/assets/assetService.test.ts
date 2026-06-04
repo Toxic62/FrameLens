@@ -138,7 +138,7 @@ describe('assetService', () => {
             faces: {
               down: { texture: '#0' },
               up: { texture: '#0' },
-              north: { texture: '#0' },
+              north: { texture: '#0', uv: [2, 4, 14, 16] },
               south: { texture: '#0' },
               west: { texture: '#0' },
               east: { texture: '#0' }
@@ -168,7 +168,8 @@ describe('assetService', () => {
           south: `data:image/png;base64,${PNG_1X1.toString('base64')}`,
           east: `data:image/png;base64,${PNG_1X1.toString('base64')}`,
           west: `data:image/png;base64,${PNG_1X1.toString('base64')}`
-        }
+        },
+        uvs: { north: [2, 4, 14, 16] }
       }
     ])
   })

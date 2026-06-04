@@ -46,11 +46,13 @@ export interface BlockFaceTextures {
 }
 
 export type ModelCoordinate = readonly [x: number, y: number, z: number]
+export type ModelUv = readonly [u1: number, v1: number, u2: number, v2: number]
 
 export interface BlockModelElement {
   readonly from: ModelCoordinate
   readonly to: ModelCoordinate
   readonly faces: BlockFaceTextures
+  readonly uvs?: Readonly<Partial<Record<keyof BlockFaceTextures, ModelUv>>>
 }
 
 export interface ResolvedBlockAsset {

@@ -22,7 +22,7 @@ import {
 } from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { createBlockAssetKey } from '@shared/assets'
-import type { BlockFaceTextures, BlockModelElement, RenderMode, ResolvedBlockAsset } from '@shared/assets'
+import type { BlockFaceTextures, BlockModelElement, ModelUv, RenderMode, ResolvedBlockAsset } from '@shared/assets'
 import type { LoadedStructure, RenderableBlock, StructureDimensions } from '@shared/structure'
 import { getBlockKey } from '@shared/viewer'
 
@@ -361,10 +361,10 @@ function createMaterialInfos(
       return elements.map((element) => {
         const geometry = getElementGeometry(element)
         return {
-          signature: `textured:${isSelected ? 'selected' : 'default'}:${geometry.signature}:${getFaceSignature(element.faces)}`,
+          signature: `textured:${isSelected ? 'selected' : 'default'}:${geometry.signature}:${getFaceSignature(element.faces)}:${getUvSignature(element.uvs)}`,
           size: geometry.size,
           offset: geometry.offset,
-          material: createTexturedMaterials(element.faces, tint)
+          material: createTexturedMaterials(element.faces, tint, element.uvs)
         }
       })
     }
@@ -396,26 +396,40 @@ function createMaterialInfos(
   }]
 }
 
-function createTexturedMaterials(faces: BlockFaceTextures, color: string): MeshLambertMaterial[] {
+function createTexturedMaterials(
+  faces: BlockFaceTextures,
+  color: string,
+  uvs: Readonly<Partial<Record<keyof BlockFaceTextures, ModelUv>>> = {}
+): MeshLambertMaterial[] {
   return [
-    createTexturedMaterial(faces.east, color),
-    createTexturedMaterial(faces.west, color),
-    createTexturedMaterial(faces.up, color),
-    createTexturedMaterial(faces.down, color),
-    createTexturedMaterial(faces.south, color),
-    createTexturedMaterial(faces.north, color)
+    createTexturedMaterial(faces.east, color, uvs.east),
+    createTexturedMaterial(faces.west, color, uvs.west),
+    createTexturedMaterial(faces.up, color, uvs.up),
+    createTexturedMaterial(faces.down, color, uvs.down),
+    createTexturedMaterial(faces.south, color, uvs.south),
+    createTexturedMaterial(faces.north, color, uvs.north)
   ]
 }
 
-function createTexturedMaterial(dataUrl: string, color: string): MeshLambertMaterial {
+function createTexturedMaterial(dataUrl: string, color: string, uv?: ModelUv): MeshLambertMaterial {
   return new MeshLambertMaterial({
     color,
-    map: loadTexture(dataUrl)
+    map: loadTexture(dataUrl, uv)
   })
 }
 
 function getFaceSignature(faces: BlockFaceTextures): string {
   return [faces.east, faces.west, faces.up, faces.down, faces.south, faces.north].join('|')
+}
+
+function getUvSignature(uvs: BlockModelElement['uvs']): string {
+  if (!uvs) {
+    return ''
+  }
+
+  return [uvs.east, uvs.west, uvs.up, uvs.down, uvs.south, uvs.north]
+    .map((uv) => uv?.join(',') ?? '')
+    .join('|')
 }
 
 function getElementGeometry(element: BlockModelElement): {
@@ -448,18 +462,31 @@ function createColorMaterial(color: string): MeshLambertMaterial {
   })
 }
 
-function loadTexture(dataUrl: string): Texture {
-  const cached = textureCache.get(dataUrl)
+function loadTexture(dataUrl: string, uv?: ModelUv): Texture {
+  const cacheKey = uv ? `${dataUrl}#${uv.join(',')}` : dataUrl
+  const cached = textureCache.get(cacheKey)
   if (cached) {
     return cached
   }
 
-  const texture = textureLoader.load(dataUrl)
+  const baseTexture = textureCache.get(dataUrl) ?? textureLoader.load(dataUrl)
+  baseTexture.magFilter = NearestFilter
+  baseTexture.minFilter = NearestFilter
+  baseTexture.generateMipmaps = false
+  baseTexture.colorSpace = SRGBColorSpace
+  textureCache.set(dataUrl, baseTexture)
+
+  const texture = uv ? baseTexture.clone() : baseTexture
   texture.magFilter = NearestFilter
   texture.minFilter = NearestFilter
   texture.generateMipmaps = false
   texture.colorSpace = SRGBColorSpace
-  textureCache.set(dataUrl, texture)
+  if (uv) {
+    texture.repeat.set(Math.max((uv[2] - uv[0]) / 16, 0.001), Math.max((uv[3] - uv[1]) / 16, 0.001))
+    texture.offset.set(uv[0] / 16, 1 - uv[3] / 16)
+    texture.needsUpdate = true
+  }
+  textureCache.set(cacheKey, texture)
   return texture
 }
 

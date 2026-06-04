@@ -12,6 +12,7 @@ import type {
   BlockAssetRequest,
   BlockFaceTextures,
   ModelCoordinate,
+  ModelUv,
   ResolvedBlockAsset,
   ResolvedBlockAssetsResult,
   VanillaAssetStatus
@@ -34,6 +35,7 @@ type ModelElementDefinition = {
   readonly from: ModelCoordinate
   readonly to: ModelCoordinate
   readonly faceTextureReferences: Readonly<Partial<Record<FaceName, string>>>
+  readonly faceUvs: Readonly<Partial<Record<FaceName, ModelUv>>>
 }
 
 const MAX_MODEL_DEPTH = 12
@@ -302,6 +304,11 @@ async function resolveBlock(assetKey: string, block: BlockAssetRequest): Promise
   const elements = await resolveModelElements(activeSource, id.namespace, resolvedModel, faceTextureIds, modelReference.yRotation)
 
   if (!faces || !elements) {
+    const specialAsset = await resolveSpecialBlockAsset(assetKey, block)
+    if (specialAsset) {
+      return specialAsset
+    }
+
     return fallbackAsset(assetKey, block, resolvedModel.warning ?? 'No supported block texture found.')
   }
 
@@ -488,10 +495,28 @@ function extractModelElements(model: JsonRecord): readonly ModelElementDefinitio
       {
         from,
         to,
-        faceTextureReferences: extractFaceTextureReferences({ elements: [record] })
+        faceTextureReferences: extractFaceTextureReferences({ elements: [record] }),
+        faceUvs: extractFaceUvs(record)
       }
     ]
   })
+}
+
+function extractFaceUvs(element: JsonRecord): Partial<Record<FaceName, ModelUv>> {
+  const faces = asRecord(element.faces)
+  const uvs: Partial<Record<FaceName, ModelUv>> = {}
+  if (!faces) {
+    return uvs
+  }
+
+  for (const face of ['up', 'down', 'north', 'south', 'east', 'west'] as const) {
+    const uv = readModelUv(asRecord(faces[face])?.uv)
+    if (uv) {
+      uvs[face] = uv
+    }
+  }
+
+  return uvs
 }
 
 async function resolveModelElements(
@@ -514,7 +539,8 @@ async function resolveModelElements(
       return {
         from: rotated.from,
         to: rotated.to,
-        faces
+        faces,
+        ...(Object.keys(element.faceUvs).length > 0 ? { uvs: element.faceUvs } : {})
       }
     })
   )
@@ -526,7 +552,8 @@ function createFullCubeElement(faceTextureReferences: Readonly<Partial<Record<Fa
   return {
     from: [0, 0, 0],
     to: [16, 16, 16],
-    faceTextureReferences
+    faceTextureReferences,
+    faceUvs: {}
   }
 }
 
@@ -598,6 +625,52 @@ function readModelCoordinate(value: unknown): ModelCoordinate | null {
   }
 
   return [x, y, z]
+}
+
+function readModelUv(value: unknown): ModelUv | null {
+  if (!Array.isArray(value) || value.length !== 4) {
+    return null
+  }
+
+  const [u1, v1, u2, v2] = value
+  if (typeof u1 !== 'number' || typeof v1 !== 'number' || typeof u2 !== 'number' || typeof v2 !== 'number') {
+    return null
+  }
+
+  return [u1, v1, u2, v2]
+}
+
+async function resolveSpecialBlockAsset(assetKey: string, block: BlockAssetRequest): Promise<ResolvedBlockAsset | null> {
+  const normalized = block.blockName.toLowerCase()
+  if (!activeSource || !/minecraft:(trapped_)?chest$|minecraft:ender_chest$/.test(normalized)) {
+    return null
+  }
+
+  const fallbackTexture = normalized.includes('ender_chest') ? 'minecraft:block/obsidian' : 'minecraft:block/oak_planks'
+  const faces = await loadFaceTextures(activeSource, {
+    up: fallbackTexture,
+    down: fallbackTexture,
+    north: fallbackTexture,
+    south: fallbackTexture,
+    east: fallbackTexture,
+    west: fallbackTexture
+  })
+
+  if (!faces) {
+    return null
+  }
+
+  return {
+    assetKey,
+    blockName: block.blockName,
+    properties: block.properties,
+    status: 'textured-cube',
+    sourceName: activeSource.name,
+    faces,
+    elements: [{ from: [0, 0, 0], to: [16, 14, 16], faces }],
+    fallbackColor: getFallbackColor(assetKey),
+    warning: 'Using a simple chest debug cube until block entity models are supported.'
+  }
 }
 
 async function loadFaceTextures(

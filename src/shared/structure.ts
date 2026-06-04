@@ -57,3 +57,11 @@ export type OpenStructureResult =
       readonly reason: 'cancelled' | 'parse-error' | 'io-error' | 'unsupported-format'
       readonly message?: string
     }
+
+export type ExportStructureResult =
+  | { readonly ok: true; readonly filePath: string }
+  | {
+      readonly ok: false
+      readonly reason: 'cancelled' | 'io-error'
+      readonly message?: string
+    }

@@ -128,8 +128,6 @@ describe('App', () => {
     render(<App />)
 
     expect(await screen.findByText('jigsaw.nbt')).toBeInTheDocument()
-    expect(screen.getByText('Grouped block list hidden.')).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'Show' }))
     fireEvent.click(screen.getByText('minecraft:jigsaw [orientation=north_up]'))
 
     await waitFor(() => {
@@ -139,6 +137,7 @@ describe('App', () => {
 
     fireEvent.click(screen.getAllByLabelText('Expand group')[0]!)
     fireEvent.click(screen.getAllByText('0, 0, 0')[0]!.closest('button')!)
+    fireEvent.click(screen.getByRole('button', { name: 'Properties' }))
 
     const orientationSelect = screen
       .getAllByRole('combobox')
@@ -146,6 +145,8 @@ describe('App', () => {
     expect(orientationSelect).toBeDefined()
     expect(screen.getByRole('option', { name: 'south_up' })).toBeInTheDocument()
 
+    fireEvent.click(screen.getByRole('button', { name: 'Close editor' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Data' }))
     expect(screen.getByDisplayValue('minecraft:air')).toBeInTheDocument()
 
     await waitFor(() => {
@@ -164,6 +165,7 @@ function createApiMock({ currentStructure, openStructureFile = vi.fn() }: ApiMoc
   return {
     openStructureFile,
     getCurrentStructure: vi.fn().mockResolvedValue(currentStructure),
+    exportStructureFile: vi.fn().mockResolvedValue({ ok: false, reason: 'cancelled' }),
     scanAssetSources: vi.fn().mockResolvedValue({ sources: [], activeSourceId: null }),
     chooseInstanceFolder: vi.fn().mockResolvedValue({ ok: false, source: null, cancelled: true }),
     activateAssetSource: vi.fn(),
