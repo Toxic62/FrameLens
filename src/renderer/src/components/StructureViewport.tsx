@@ -3,6 +3,7 @@ import type { ReactElement } from 'react'
 import {
   AmbientLight,
   BoxGeometry,
+  CanvasTexture,
   Color,
   DirectionalLight,
   GridHelper,
@@ -15,6 +16,8 @@ import {
   Raycaster,
   Scene,
   SRGBColorSpace,
+  Sprite,
+  SpriteMaterial,
   Texture,
   TextureLoader,
   Vector2,
@@ -58,6 +61,7 @@ interface ViewportState {
   blockMeshes: readonly BlockMeshRecord[]
   placementPreviewMesh: Mesh | null
   selectionOverlayMesh: InstancedMesh | null
+  directionLabels: readonly Sprite[]
   structureDimensions: StructureDimensions
   renderPaused: boolean
 }
@@ -164,6 +168,7 @@ export function StructureViewport({
       blockMeshes: [],
       placementPreviewMesh: null,
       selectionOverlayMesh: null,
+      directionLabels: [],
       structureDimensions: DEFAULT_DIMENSIONS,
       renderPaused: false
     }
@@ -245,6 +250,7 @@ export function StructureViewport({
       removeBlocks(viewportRef.current)
       removePlacementPreview(viewportRef.current)
       removeSelectionOverlay(viewportRef.current)
+      removeDirectionLabels(viewportRef.current)
       controls.dispose()
       renderer.dispose()
       renderer.domElement.remove()
@@ -262,6 +268,11 @@ export function StructureViewport({
     updateBlocks(viewport, { visibleBlocks, selectedBlockKey, highlightedBlockKeys: new Set(highlightedBlockKeys), renderMode, blockAssets })
     updateSelectionOverlay(viewport, visibleBlocks, new Set(highlightedBlockKeys))
     updatePlacementPreview(viewport, structure ? placementPreviewPosition : null, placementPreviewOverlaps)
+    if (structure) {
+      updateDirectionLabels(viewport, structure.dimensions)
+    } else {
+      removeDirectionLabels(viewport)
+    }
   }, [blockAssets, highlightedBlockKeys, placementPreviewOverlaps, placementPreviewPosition, renderMode, selectedBlockKey, structure, visibleBlocks])
 
   useEffect(() => {
@@ -285,12 +296,6 @@ export function StructureViewport({
 
   return (
     <div className="viewport-frame" ref={containerRef}>
-      <div className="direction-indicator" aria-label="World directions">
-        <span className="direction-north">N -Z</span>
-        <span className="direction-east">E +X</span>
-        <span className="direction-south">S +Z</span>
-        <span className="direction-west">W -X</span>
-      </div>
       {!structure && <div className="viewport-placeholder">No structure loaded</div>}
       {structure && structure.blocks.length === 0 && <div className="viewport-placeholder">No non-air blocks</div>}
       {structure && structure.blocks.length > 0 && visibleBlocks.length === 0 && (
@@ -439,7 +444,9 @@ function createTexturedMaterial(
 ): MeshLambertMaterial {
   return new MeshLambertMaterial({
     color,
-    map: loadTexture(dataUrl, uv, uvSize)
+    map: loadTexture(dataUrl, uv, uvSize),
+    transparent: true,
+    alphaTest: 0.1
   })
 }
 
@@ -564,11 +571,13 @@ function updateSelectionOverlay(
     return
   }
 
-  const geometry = new BoxGeometry(1.06, 1.06, 1.06)
+  const geometry = new BoxGeometry(1.14, 1.14, 1.14)
   const material = new MeshLambertMaterial({
     color: SELECTED_BLOCK_TINT,
+    emissive: SELECTED_BLOCK_TINT,
+    emissiveIntensity: 0.35,
     transparent: true,
-    opacity: 0.58,
+    opacity: 0.95,
     depthTest: false,
     depthWrite: false,
     wireframe: true
@@ -601,6 +610,90 @@ function removeSelectionOverlay(viewport: ViewportState | null): void {
   viewport.selectionOverlayMesh = null
 }
 
+function updateDirectionLabels(viewport: ViewportState, dimensions: StructureDimensions): void {
+  removeDirectionLabels(viewport)
+
+  const y = 0.08
+  const centerX = dimensions.x / 2
+  const centerZ = dimensions.z / 2
+  const offset = 1.35
+  const labels = [
+    createDirectionLabel('N -Z', centerX, y, -offset, '#84d8af'),
+    createDirectionLabel('S +Z', centerX, y, dimensions.z + offset, '#dce6ee'),
+    createDirectionLabel('W -X', -offset, y, centerZ, '#dce6ee'),
+    createDirectionLabel('E +X', dimensions.x + offset, y, centerZ, '#dce6ee')
+  ]
+
+  for (const label of labels) {
+    viewport.scene.add(label)
+  }
+  viewport.directionLabels = labels
+}
+
+function createDirectionLabel(text: string, x: number, y: number, z: number, color: string): Sprite {
+  const canvas = document.createElement('canvas')
+  canvas.width = 192
+  canvas.height = 72
+  const context = canvas.getContext('2d')
+  if (context) {
+    context.fillStyle = 'rgba(17, 23, 28, 0.78)'
+    context.strokeStyle = 'rgba(132, 216, 175, 0.72)'
+    context.lineWidth = 3
+    roundRect(context, 6, 6, 180, 60, 12)
+    context.fill()
+    context.stroke()
+    context.fillStyle = color
+    context.font = '700 28px sans-serif'
+    context.textAlign = 'center'
+    context.textBaseline = 'middle'
+    context.fillText(text, 96, 37)
+  }
+
+  const texture = new CanvasTexture(canvas)
+  texture.colorSpace = SRGBColorSpace
+  const material = new SpriteMaterial({ map: texture, transparent: true, depthTest: false, depthWrite: false })
+  const sprite = new Sprite(material)
+  sprite.position.set(x, y, z)
+  sprite.scale.set(2.4, 0.9, 1)
+  sprite.renderOrder = 12
+  return sprite
+}
+
+function roundRect(context: CanvasRenderingContext2D, x: number, y: number, width: number, height: number, radius: number): void {
+  context.beginPath()
+  context.moveTo(x + radius, y)
+  context.lineTo(x + width - radius, y)
+  context.quadraticCurveTo(x + width, y, x + width, y + radius)
+  context.lineTo(x + width, y + height - radius)
+  context.quadraticCurveTo(x + width, y + height, x + width - radius, y + height)
+  context.lineTo(x + radius, y + height)
+  context.quadraticCurveTo(x, y + height, x, y + height - radius)
+  context.lineTo(x, y + radius)
+  context.quadraticCurveTo(x, y, x + radius, y)
+  context.closePath()
+}
+
+function removeDirectionLabels(viewport: ViewportState | null): void {
+  if (!viewport || viewport.directionLabels.length === 0) {
+    return
+  }
+
+  for (const label of viewport.directionLabels) {
+    viewport.scene.remove(label)
+    const material = label.material
+    const map = Array.isArray(material) ? null : material.map
+    map?.dispose()
+    if (Array.isArray(material)) {
+      for (const entry of material) {
+        entry.dispose()
+      }
+    } else {
+      material.dispose()
+    }
+  }
+  viewport.directionLabels = []
+}
+
 function updatePlacementPreview(viewport: ViewportState, position: BlockPosition | null, overlaps: boolean): void {
   removePlacementPreview(viewport)
   if (!position) {
@@ -609,12 +702,14 @@ function updatePlacementPreview(viewport: ViewportState, position: BlockPosition
 
   const material = new MeshLambertMaterial({
     color: overlaps ? '#ff6b5f' : SELECTED_BLOCK_TINT,
+    emissive: overlaps ? '#ff2f24' : SELECTED_BLOCK_TINT,
+    emissiveIntensity: 0.28,
     transparent: true,
-    opacity: overlaps ? 0.66 : 0.46,
+    opacity: overlaps ? 0.74 : 0.56,
     depthTest: false,
     depthWrite: false
   })
-  const mesh = new Mesh(new BoxGeometry(1.04, 1.04, 1.04), material)
+  const mesh = new Mesh(new BoxGeometry(1.12, 1.12, 1.12), material)
   mesh.position.set(position[0] + 0.5, position[1] + 0.5, position[2] + 0.5)
   mesh.renderOrder = 11
   viewport.scene.add(mesh)

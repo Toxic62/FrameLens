@@ -247,11 +247,6 @@ h1 {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
-.toolbar-segments {
-  width: 246px;
-  min-height: 32px;
-}
-
 .segment-button {
   display: inline-flex;
   align-items: center;
@@ -578,47 +573,6 @@ h1 {
   height: 100%;
 }
 
-.direction-indicator {
-  position: absolute;
-  top: 12px;
-  right: 12px;
-  z-index: 4;
-  display: grid;
-  grid-template-areas:
-    ". n ."
-    "w . e"
-    ". s .";
-  grid-template-columns: 44px 44px 44px;
-  grid-template-rows: 26px 26px 26px;
-  align-items: center;
-  justify-items: center;
-  border: 1px solid rgb(132 216 175 / 35%);
-  border-radius: 8px;
-  padding: 6px;
-  color: #dce6ee;
-  background: rgb(17 23 28 / 72%);
-  font-size: 0.72rem;
-  font-weight: 700;
-  pointer-events: none;
-}
-
-.direction-north {
-  grid-area: n;
-  color: #84d8af;
-}
-
-.direction-east {
-  grid-area: e;
-}
-
-.direction-south {
-  grid-area: s;
-}
-
-.direction-west {
-  grid-area: w;
-}
-
 .modal-layer {
   position: fixed;
   inset: 48px 0 0;
@@ -800,16 +754,9 @@ h1 {
     padding: 0 10px 10px;
   }
 
-  .toolbar-segments,
   .container-item-list li {
     width: 100%;
     grid-template-columns: 1fr;
   }
 
-  .direction-indicator {
-    right: 8px;
-    top: 8px;
-    transform: scale(0.86);
-    transform-origin: top right;
-  }
 }

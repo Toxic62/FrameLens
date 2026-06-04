@@ -4,6 +4,7 @@ import type { ExportStructureResult, LoadedStructure, OpenStructureResult } from
 export interface FrameLensApi {
   openStructureFile(): Promise<OpenStructureResult>
   getCurrentStructure(): Promise<LoadedStructure | null>
+  updateCurrentStructure(structure: LoadedStructure, hasUnsavedChanges: boolean): void
   exportStructureFile(structure: LoadedStructure): Promise<ExportStructureResult>
   scanAssetSources(): Promise<AssetScanResult>
   chooseInstanceFolder(): Promise<AssetActivationResult>

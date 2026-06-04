@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { ReactElement, ReactNode } from 'react'
 import {
-  Box,
   CheckSquare,
   ChevronDown,
   ChevronRight,
@@ -9,21 +8,21 @@ import {
   Edit3,
   FileDown,
   FolderOpen,
-  Image,
   ListTree,
   Maximize2,
-  Palette,
   Plus,
   Redo2,
   RotateCcw,
+  Square,
   Trash2,
   Undo2,
   X
 } from 'lucide-react'
 import { createBlockAssetKey } from '@shared/assets'
-import type { AssetScanResult, AssetSourceSummary, BlockAssetRequest, RenderMode, ResolvedBlockAsset } from '@shared/assets'
+import type { AssetScanResult, AssetSourceSummary, BlockAssetRequest, ResolvedBlockAsset } from '@shared/assets'
+import { getKnownBlockEntityCapability } from '@shared/blockCapabilities'
+import type { BlockEntityCapability } from '@shared/blockCapabilities'
 import type {
-  BlockEntityKind,
   BlockPosition,
   ContainerItemSummary,
   ContainerMode,
@@ -79,7 +78,6 @@ export default function App(): ReactElement {
   const [historyFuture, setHistoryFuture] = useState<readonly LoadedStructure[]>([])
   const [exportStatus, setExportStatus] = useState<string | null>(null)
   const [viewportCommand, setViewportCommand] = useState<ViewportCommand | null>(null)
-  const [renderMode, setRenderMode] = useState<RenderMode>('debug')
   const [assetScan, setAssetScan] = useState<AssetScanResult>({ sources: [], activeSourceId: null })
   const [assetStatus, setAssetStatus] = useState('Choose an instance folder for textured rendering.')
   const [blockAssets, setBlockAssets] = useState<Readonly<Record<string, ResolvedBlockAsset>>>({})
@@ -119,7 +117,6 @@ export default function App(): ReactElement {
         if (scan.activeSourceId) {
           const source = scan.sources.find((candidate) => candidate.id === scan.activeSourceId)
           setAssetStatus(source ? formatAssetStatus(source) : 'Asset source selected.')
-          setRenderMode('textured')
         } else {
           setAssetStatus('Choose an instance folder for textured rendering.')
         }
@@ -403,7 +400,6 @@ export default function App(): ReactElement {
       sources: mergeAssetSources(current.sources, source),
       activeSourceId: source.id
     }))
-    setRenderMode('textured')
     setAssetStatus(formatAssetStatus(source))
   }
 
@@ -417,6 +413,7 @@ export default function App(): ReactElement {
     setHistoryFuture([])
     setExportStatus(null)
     setLoadState({ status: 'loaded', structure: nextStructure })
+    window.frameLens.updateCurrentStructure(nextStructure, true)
   }
 
   function updateBlockProperty(blockKey: string, propertyName: string, value: string): void {
@@ -566,6 +563,7 @@ export default function App(): ReactElement {
     setHistoryPast((past) => past.slice(0, -1))
     setHistoryFuture((future) => [loadState.structure, ...future])
     setLoadState({ status: 'loaded', structure: previous })
+    window.frameLens.updateCurrentStructure(previous, true)
     setExportStatus(null)
   }
 
@@ -578,6 +576,7 @@ export default function App(): ReactElement {
     setHistoryFuture((future) => future.slice(1))
     setHistoryPast((past) => [...past, loadState.structure])
     setLoadState({ status: 'loaded', structure: next })
+    window.frameLens.updateCurrentStructure(next, true)
     setExportStatus(null)
   }
 
@@ -608,10 +607,14 @@ export default function App(): ReactElement {
   function applyPlacedBlock(block: RenderableBlock, mode: PlacementDialog['mode']): void {
     const blockKey = getBlockKey(block.position)
     updateLoadedStructure((current) => {
+      const palette = ensurePaletteEntry(current.palette, block.name, block.properties)
+      const state = palette.findIndex((entry) => createBlockAssetKey(entry.name, entry.properties) === createBlockAssetKey(block.name, block.properties))
+      const placedBlock = { ...block, state: Math.max(state, 0) }
       const withoutTarget = current.blocks.filter((candidate) => getBlockKey(candidate.position) !== blockKey)
       return {
         ...current,
-        blocks: [...withoutTarget, block].sort((left, right) => getBlockKey(left.position).localeCompare(getBlockKey(right.position)))
+        palette,
+        blocks: [...withoutTarget, placedBlock].sort((left, right) => getBlockKey(left.position).localeCompare(getBlockKey(right.position)))
       }
     })
     setSelectedBlockKey(blockKey)
@@ -625,6 +628,35 @@ export default function App(): ReactElement {
 
   function updatePlacementPosition(position: BlockPosition): void {
     setPlacementDialog((current) => current ? { ...current, position: [...position] as [number, number, number] } : current)
+  }
+
+  function openDataEditor(blockKeys: readonly string[]): void {
+    ensureBlockEntities(blockKeys)
+    setEditorDialog({ kind: 'data', blockKeys })
+  }
+
+  function ensureBlockEntities(blockKeys: readonly string[]): void {
+    if (!structure) {
+      return
+    }
+
+    const keySet = new Set(blockKeys)
+    const needsUpdate = structure.blocks.some((block) => keySet.has(getBlockKey(block.position)) && !block.blockEntity && getBlockCapabilities(block.name, structure) !== null)
+    if (!needsUpdate) {
+      return
+    }
+
+    updateLoadedStructure((current) => ({
+      ...current,
+      blocks: current.blocks.map((block) => {
+        if (!keySet.has(getBlockKey(block.position)) || block.blockEntity) {
+          return block
+        }
+
+        const blockEntity = createDefaultBlockEntity(block, current)
+        return blockEntity ? { ...block, blockEntity } : block
+      })
+    }))
   }
 
   return (
@@ -641,7 +673,7 @@ export default function App(): ReactElement {
           </button>
           <button className="toolbar-button" type="button" onClick={() => void handleChooseInstanceFolder()}>
             <FolderOpen aria-hidden="true" size={16} />
-            <span>{activeAssetSource ? 'Instance' : 'Select instance'}</span>
+            <span>{activeAssetSource ? activeAssetSource.name : 'Select instance'}</span>
           </button>
           <button className="toolbar-button" type="button" onClick={() => sendViewportCommand('fit')} disabled={!structure}>
             <Maximize2 aria-hidden="true" size={16} />
@@ -653,11 +685,6 @@ export default function App(): ReactElement {
           </button>
         </div>
         <div className="toolbar-group">
-          <div className="segmented-control toolbar-segments" aria-label="Render mode">
-            <RenderModeButton mode="debug" currentMode={renderMode} onClick={setRenderMode} />
-            <RenderModeButton mode="palette" currentMode={renderMode} onClick={setRenderMode} />
-            <RenderModeButton mode="textured" currentMode={renderMode} onClick={setRenderMode} />
-          </div>
           <button className="toolbar-button icon-label" type="button" onClick={undoEdit} disabled={historyPast.length === 0}>
             <Undo2 aria-hidden="true" size={16} />
             <span>Undo</span>
@@ -743,7 +770,8 @@ export default function App(): ReactElement {
                   block={selectedBlock}
                   structure={structure}
                   onOpenProperties={(blockKey) => setEditorDialog({ kind: 'properties', blockKeys: [blockKey] })}
-                  onOpenData={(blockKey) => setEditorDialog({ kind: 'data', blockKeys: [blockKey] })}
+                  canHaveData={getBlockCapabilities(selectedBlock.name, structure) !== null}
+                  onOpenData={(blockKey) => openDataEditor([blockKey])}
                 />
               ) : (
                 <p className="state-copy compact">
@@ -771,7 +799,8 @@ export default function App(): ReactElement {
                 onSelectBlock={handleSelectBlockFromList}
                 onToggleBlockSelection={toggleBlockSelection}
                 onOpenProperties={(blockKeys) => setEditorDialog({ kind: 'properties', blockKeys })}
-                onOpenData={(blockKeys) => setEditorDialog({ kind: 'data', blockKeys })}
+                getBlockCapabilities={(block) => getBlockCapabilities(block.name, structure)}
+                onOpenData={openDataEditor}
               />
             </PanelSection>
 
@@ -801,7 +830,7 @@ export default function App(): ReactElement {
           highlightedBlockKeys={highlightedBlockKeys}
           placementPreviewPosition={placementDialog?.position ?? null}
           placementPreviewOverlaps={placementPreviewOverlaps}
-          renderMode={renderMode}
+          renderMode="textured"
           blockAssets={blockAssets}
           viewportCommand={viewportCommand}
           onSelectBlock={handleSelectBlock}
@@ -936,6 +965,7 @@ interface BlockGroupListProps {
   readonly onSelectGroup: (groupKey: string) => void
   readonly onSelectBlock: (block: RenderableBlock) => void
   readonly onToggleBlockSelection: (block: RenderableBlock) => void
+  readonly getBlockCapabilities: (block: RenderableBlock) => BlockEntityCapability | null
   readonly onOpenProperties: (blockKeys: readonly string[]) => void
   readonly onOpenData: (blockKeys: readonly string[]) => void
 }
@@ -950,6 +980,7 @@ function BlockGroupList({
   onSelectGroup,
   onSelectBlock,
   onToggleBlockSelection,
+  getBlockCapabilities,
   onOpenProperties,
   onOpenData
 }: BlockGroupListProps): ReactElement {
@@ -963,7 +994,7 @@ function BlockGroupList({
         const isExpanded = expandedGroups.has(group.key)
         const groupBlockKeys = group.blocks.map((block) => getBlockKey(block.position))
         const hasEditableProperties = group.blocks.some((block) => Object.keys(block.properties).length > 0)
-        const hasBlockEntityData = group.blocks.some((block) => block.blockEntity)
+        const hasBlockEntityData = group.blocks.some((block) => block.blockEntity || getBlockCapabilities(block) !== null)
         return (
           <li className="block-group-item" key={group.key}>
             <div className="block-group-row">
@@ -1010,11 +1041,11 @@ function BlockGroupList({
                         aria-label={selectedBlockKeys.has(blockKey) ? 'Remove from selection' : 'Add to selection'}
                         onClick={() => onToggleBlockSelection(block)}
                       >
-                        <CheckSquare aria-hidden="true" size={14} />
+                        {selectedBlockKeys.has(blockKey) ? <CheckSquare aria-hidden="true" size={14} /> : <Square aria-hidden="true" size={14} />}
                       </button>
                       <BlockRowActions
                         disabledProperties={Object.keys(block.properties).length === 0}
-                        disabledData={!block.blockEntity}
+                        disabledData={!block.blockEntity && getBlockCapabilities(block) === null}
                         onOpenProperties={() => onOpenProperties([blockKey])}
                         onOpenData={() => onOpenData([blockKey])}
                       />
@@ -1053,6 +1084,7 @@ function BlockRowActions({ disabledProperties, disabledData, onOpenProperties, o
 interface SelectedBlockDetailsProps {
   readonly block: RenderableBlock
   readonly structure: LoadedStructure
+  readonly canHaveData: boolean
   readonly onOpenProperties: (blockKey: string) => void
   readonly onOpenData: (blockKey: string) => void
 }
@@ -1060,6 +1092,7 @@ interface SelectedBlockDetailsProps {
 function SelectedBlockDetails({
   block,
   structure,
+  canHaveData,
   onOpenProperties,
   onOpenData
 }: SelectedBlockDetailsProps): ReactElement {
@@ -1082,7 +1115,7 @@ function SelectedBlockDetails({
           <Edit3 aria-hidden="true" size={16} />
           <span>Properties</span>
         </button>
-        <button className="tool-button" type="button" onClick={() => onOpenData(blockKey)} disabled={!block.blockEntity}>
+        <button className="tool-button" type="button" onClick={() => onOpenData(blockKey)} disabled={!block.blockEntity && !canHaveData}>
           <ListTree aria-hidden="true" size={16} />
           <span>Data</span>
         </button>
@@ -1100,6 +1133,10 @@ interface PropertyValueEditorProps {
 }
 
 function PropertyValueEditor({ block, propertyName, value, onChange }: PropertyValueEditorProps): ReactElement {
+  if (isBooleanChoice(propertyName, value)) {
+    return <BooleanChoiceEditor fieldName={propertyName} value={value} onChange={(nextValue) => onChange(propertyName, nextValue)} />
+  }
+
   const options = getPropertyOptions(block, propertyName, value)
   const handleChange = (nextValue: string): void => onChange(propertyName, nextValue)
   return (
@@ -1112,6 +1149,41 @@ function PropertyValueEditor({ block, propertyName, value, onChange }: PropertyV
       {options.map((option) => (
         <option key={option} value={option}>
           {option}
+        </option>
+      ))}
+    </select>
+  )
+}
+
+interface BooleanChoiceEditorProps {
+  readonly fieldName: string
+  readonly value: string
+  readonly onChange: (value: string) => void
+}
+
+function BooleanChoiceEditor({ fieldName, value, onChange }: BooleanChoiceEditorProps): ReactElement {
+  const normalized = value.toLowerCase()
+  const numeric = normalized === '0' || normalized === '1'
+  const options = numeric
+    ? [
+        { value: '0', label: 'Off' },
+        { value: '1', label: 'On' }
+      ]
+    : [
+        { value: 'false', label: 'False' },
+        { value: 'true', label: 'True' }
+      ]
+
+  return (
+    <select
+      className="select-input compact-input"
+      aria-label={fieldName}
+      value={numeric ? (value === '1' ? '1' : '0') : normalized === 'true' ? 'true' : 'false'}
+      onChange={(event) => onChange(event.currentTarget.value)}
+    >
+      {options.map((option) => (
+        <option key={option.value} value={option.value}>
+          {option.label}
         </option>
       ))}
     </select>
@@ -1166,7 +1238,13 @@ function BlockEntityEditor({
             <div key={field.name}>
               <dt>{field.label}</dt>
               <dd>
-                {field.options ? (
+                {isBooleanChoice(field.name, blockEntity.fields[field.name] ?? '') ? (
+                  <BooleanChoiceEditor
+                    fieldName={field.name}
+                    value={blockEntity.fields[field.name] ?? ''}
+                    onChange={(nextValue) => onFieldChange(field.name, nextValue)}
+                  />
+                ) : field.options ? (
                   <select
                     className="select-input compact-input"
                     value={blockEntity.fields[field.name] ?? ''}
@@ -1218,7 +1296,10 @@ function ContainerBlockEntityEditor({
     return <></>
   }
 
-  const mode = blockEntity.containerMode ?? (blockEntity.fields.LootTable ? 'lootTable' : 'items')
+  const supportsLootTable = getKnownBlockEntityCapability(block.name)?.supportsLootTable ?? true
+  const mode = supportsLootTable
+    ? (blockEntity.containerMode ?? (blockEntity.fields.LootTable ? 'lootTable' : 'items'))
+    : 'items'
   const items = blockEntity.items ?? []
 
   return (
@@ -1227,25 +1308,35 @@ function ContainerBlockEntityEditor({
         <ListTree aria-hidden="true" size={16} />
         <span>{blockEntity.id}</span>
       </div>
-      <div className="segmented-control two-up" aria-label="Container edit mode">
-        <button className="segment-button" type="button" aria-pressed={mode === 'items'} onClick={() => onContainerModeChange('items')}>
-          <span>Items</span>
-        </button>
-        <button className="segment-button" type="button" aria-pressed={mode === 'lootTable'} onClick={() => onContainerModeChange('lootTable')}>
-          <span>Loot table</span>
-        </button>
-      </div>
+      {supportsLootTable && (
+        <div className="segmented-control two-up" aria-label="Container edit mode">
+          <button className="segment-button" type="button" aria-pressed={mode === 'items'} onClick={() => onContainerModeChange('items')}>
+            <span>Items</span>
+          </button>
+          <button className="segment-button" type="button" aria-pressed={mode === 'lootTable'} onClick={() => onContainerModeChange('lootTable')}>
+            <span>Loot table</span>
+          </button>
+        </div>
+      )}
       {mode === 'lootTable' ? (
         <dl className="property-grid">
           {getEditableBlockEntityFields(block).map((field) => (
             <div key={field.name}>
               <dt>{field.label}</dt>
               <dd>
-                <input
-                  className="search-input compact-input"
-                  value={blockEntity.fields[field.name] ?? ''}
-                  onChange={(event) => onFieldChange(field.name, event.target.value)}
-                />
+                {isBooleanChoice(field.name, blockEntity.fields[field.name] ?? '') ? (
+                  <BooleanChoiceEditor
+                    fieldName={field.name}
+                    value={blockEntity.fields[field.name] ?? ''}
+                    onChange={(nextValue) => onFieldChange(field.name, nextValue)}
+                  />
+                ) : (
+                  <input
+                    className="search-input compact-input"
+                    value={blockEntity.fields[field.name] ?? ''}
+                    onChange={(event) => onFieldChange(field.name, event.target.value)}
+                  />
+                )}
               </dd>
             </div>
           ))}
@@ -1418,12 +1509,15 @@ function PlacementModal({ dialog, structure, overlaps, onClose, onPositionChange
   const [facing, setFacing] = useState(dialog.sourceBlock?.properties.facing ?? 'north')
   const [orientation, setOrientation] = useState(dialog.sourceBlock?.properties.orientation ?? 'north_up')
   const [withBlockEntity, setWithBlockEntity] = useState(Boolean(dialog.sourceBlock?.blockEntity))
+  const [containerMode, setContainerMode] = useState<ContainerMode>(dialog.sourceBlock?.blockEntity?.containerMode ?? 'lootTable')
   const [lootTable, setLootTable] = useState(dialog.sourceBlock?.blockEntity?.fields.LootTable ?? '')
   const [jigsawName, setJigsawName] = useState(dialog.sourceBlock?.blockEntity?.fields.name ?? '')
 
   const supportsFacing = blockSupportsFacing(blockName)
   const supportsOrientation = blockSupportsOrientation(blockName)
-  const blockEntityKind = inferEditableBlockEntityKind(blockName)
+  const capabilities = getBlockCapabilities(blockName, structure)
+  const blockEntityKind = capabilities?.kind ?? null
+  const effectiveContainerMode = capabilities?.supportsLootTable === false ? 'items' : containerMode
   const canHaveBlockEntity = blockEntityKind !== null
   const title = dialog.mode === 'add' ? 'Add block' : 'Transform block'
 
@@ -1442,25 +1536,29 @@ function PlacementModal({ dialog, structure, overlaps, onClose, onPositionChange
       properties.orientation = orientation
     }
 
-    const blockEntity = withBlockEntity && blockEntityKind
+    const normalizedName = normalizeBlockName(blockName)
+    const baseBlock: RenderableBlock = {
+      position,
+      state: structure.palette.length,
+      name: normalizedName,
+      properties
+    }
+    const defaultBlockEntity = withBlockEntity ? createDefaultBlockEntity(baseBlock, structure, effectiveContainerMode) : null
+    const blockEntity = defaultBlockEntity?.kind === 'jigsaw'
       ? {
-          id: blockName,
-          kind: blockEntityKind,
-          position,
-          fields: blockEntityKind === 'jigsaw'
-            ? { name: jigsawName, target: '', pool: '', final_state: 'minecraft:air', joint: 'rollable' }
-            : blockEntityKind === 'container'
-              ? { LootTable: lootTable }
-              : {}
+          ...defaultBlockEntity,
+          fields: { ...defaultBlockEntity.fields, name: jigsawName }
         }
-      : undefined
+      : defaultBlockEntity?.kind === 'container' && effectiveContainerMode === 'lootTable'
+        ? {
+            ...defaultBlockEntity,
+            fields: { LootTable: lootTable }
+          }
+        : defaultBlockEntity ?? undefined
 
     onApply(
       {
-        position,
-        state: structure.palette.length,
-        name: normalizeBlockName(blockName),
-        properties,
+        ...baseBlock,
         ...(blockEntity ? { blockEntity } : {})
       },
       dialog.mode
@@ -1532,10 +1630,24 @@ function PlacementModal({ dialog, structure, overlaps, onClose, onPositionChange
           </label>
         )}
         {withBlockEntity && blockEntityKind === 'container' && (
-          <label className="field-label">
-            <span>Loot table</span>
-            <input className="search-input" value={lootTable} onChange={(event) => setLootTable(event.target.value)} />
-          </label>
+          <>
+            {capabilities?.supportsLootTable && (
+              <div className="segmented-control two-up" aria-label="New container mode">
+                <button className="segment-button" type="button" aria-pressed={effectiveContainerMode === 'items'} onClick={() => setContainerMode('items')}>
+                  <span>Container</span>
+                </button>
+                <button className="segment-button" type="button" aria-pressed={effectiveContainerMode === 'lootTable'} onClick={() => setContainerMode('lootTable')}>
+                  <span>Lootable</span>
+                </button>
+              </div>
+            )}
+            {effectiveContainerMode === 'lootTable' && (
+              <label className="field-label">
+                <span>Loot table</span>
+                <input className="search-input" value={lootTable} onChange={(event) => setLootTable(event.target.value)} />
+              </label>
+            )}
+          </>
         )}
         {withBlockEntity && blockEntityKind === 'jigsaw' && (
           <label className="field-label">
@@ -1549,29 +1661,6 @@ function PlacementModal({ dialog, structure, overlaps, onClose, onPositionChange
         </div>
       </div>
     </div>
-  )
-}
-
-interface RenderModeButtonProps {
-  readonly mode: RenderMode
-  readonly currentMode: RenderMode
-  readonly onClick: (mode: RenderMode) => void
-}
-
-function RenderModeButton({ mode, currentMode, onClick }: RenderModeButtonProps): ReactElement {
-  const label = mode === 'debug' ? 'Debug' : mode === 'palette' ? 'Palette' : 'Textured'
-  const Icon = mode === 'debug' ? Box : mode === 'palette' ? Palette : Image
-
-  return (
-    <button
-      className="segment-button"
-      type="button"
-      aria-pressed={mode === currentMode}
-      onClick={() => onClick(mode)}
-    >
-      <Icon aria-hidden="true" size={15} />
-      <span>{label}</span>
-    </button>
   )
 }
 
@@ -1648,6 +1737,26 @@ function countUniquePaletteEntries(blocks: readonly RenderableBlock[], palette: 
     keys.add(createBlockAssetKey(block.name, block.properties))
   }
   return keys.size
+}
+
+function ensurePaletteEntry(
+  palette: LoadedStructure['palette'],
+  blockName: string,
+  properties: Readonly<Record<string, string>>
+): LoadedStructure['palette'] {
+  const key = createBlockAssetKey(blockName, properties)
+  if (palette.some((entry) => createBlockAssetKey(entry.name, entry.properties) === key)) {
+    return palette
+  }
+
+  return [
+    ...palette,
+    {
+      index: palette.length,
+      name: blockName,
+      properties
+    }
+  ]
 }
 
 function groupStructureBlocks(blocks: readonly RenderableBlock[]): readonly BlockGroup[] {
@@ -1730,6 +1839,24 @@ function getSharedPropertyValue(blocks: readonly RenderableBlock[], propertyName
   return values.length === 1 ? values[0] ?? '' : ''
 }
 
+function isBooleanChoice(fieldName: string, value: string): boolean {
+  const normalizedValue = value.toLowerCase()
+  if (!['0', '1', 'true', 'false'].includes(normalizedValue)) {
+    return false
+  }
+
+  const normalizedName = fieldName.toLowerCase()
+  if (/seed|count|slot|priority|level|layers|delay|rotation|age|power|max|min|height|distance|note/.test(normalizedName)) {
+    return false
+  }
+
+  return (
+    normalizedValue === 'true' ||
+    normalizedValue === 'false' ||
+    /enabled|disabled|active|powered|open|lit|waterlogged|locked|triggered|occupied|persistent|visible|valid|attached|short|signal|conditional|auto|keep|ignore/.test(normalizedName)
+  )
+}
+
 function getPropertyOptions(block: RenderableBlock, propertyName: string, currentValue: string): readonly string[] {
   const options = getKnownPropertyOptions(block, propertyName)
   return options.includes(currentValue) ? options : [currentValue, ...options]
@@ -1801,15 +1928,53 @@ function blockSupportsOrientation(blockName: string): boolean {
   return normalizeBlockName(blockName).toLowerCase().includes('jigsaw')
 }
 
-function inferEditableBlockEntityKind(blockName: string): BlockEntityKind | null {
+function getBlockCapabilities(blockName: string, structure: LoadedStructure): BlockEntityCapability | null {
   const normalized = normalizeBlockName(blockName).toLowerCase()
-  if (normalized.includes('jigsaw')) {
-    return 'jigsaw'
+  const knownBlock = structure.blocks.find((block) => block.name.toLowerCase() === normalized && block.blockEntity)
+  if (knownBlock?.blockEntity) {
+    const knownCapability = getKnownBlockEntityCapability(normalized)
+    return {
+      kind: knownBlock.blockEntity.kind,
+      supportsLootTable: knownCapability?.supportsLootTable ?? (knownBlock.blockEntity.kind === 'container' && knownBlock.blockEntity.fields.LootTable !== undefined)
+    }
   }
-  if (/chest|barrel|shulker_box|dispenser|dropper/.test(normalized)) {
-    return 'container'
+
+  return getKnownBlockEntityCapability(normalized)
+}
+
+function createDefaultBlockEntity(block: RenderableBlock, structure: LoadedStructure, preferredMode?: ContainerMode): RenderableBlock['blockEntity'] | null {
+  const capabilities = getBlockCapabilities(block.name, structure)
+  if (!capabilities) {
+    return null
   }
-  return null
+
+  if (capabilities.kind === 'container') {
+    const containerMode = capabilities.supportsLootTable ? (preferredMode ?? 'lootTable') : 'items'
+    return {
+      id: block.name,
+      kind: 'container',
+      position: block.position,
+      containerMode,
+      ...(containerMode === 'items' ? { items: [] } : {}),
+      fields: containerMode === 'lootTable' ? { LootTable: '' } : {}
+    }
+  }
+
+  if (capabilities.kind === 'jigsaw') {
+    return {
+      id: block.name,
+      kind: 'jigsaw',
+      position: block.position,
+      fields: { name: '', target: '', pool: '', final_state: 'minecraft:air', joint: 'rollable' }
+    }
+  }
+
+  return {
+    id: block.name,
+    kind: 'generic',
+    position: block.position,
+    fields: {}
+  }
 }
 
 function clampInteger(value: number, min: number, max: number): number {

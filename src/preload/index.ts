@@ -7,7 +7,8 @@ import {
   GET_CURRENT_STRUCTURE_CHANNEL,
   OPEN_STRUCTURE_CHANNEL,
   RESOLVE_BLOCK_ASSETS_CHANNEL,
-  SCAN_ASSET_SOURCES_CHANNEL
+  SCAN_ASSET_SOURCES_CHANNEL,
+  UPDATE_CURRENT_STRUCTURE_CHANNEL
 } from '@shared/ipc'
 import type { AssetActivationResult, AssetScanResult, BlockAssetRequest, ResolvedBlockAssetsResult } from '@shared/assets'
 import type { ExportStructureResult, LoadedStructure, OpenStructureResult } from '@shared/structure'
@@ -15,6 +16,9 @@ import type { ExportStructureResult, LoadedStructure, OpenStructureResult } from
 const api: FrameLensApi = {
   openStructureFile: () => ipcRenderer.invoke(OPEN_STRUCTURE_CHANNEL) as Promise<OpenStructureResult>,
   getCurrentStructure: () => ipcRenderer.invoke(GET_CURRENT_STRUCTURE_CHANNEL) as Promise<LoadedStructure | null>,
+  updateCurrentStructure: (structure, hasUnsavedChanges) => {
+    ipcRenderer.send(UPDATE_CURRENT_STRUCTURE_CHANNEL, structure, hasUnsavedChanges)
+  },
   exportStructureFile: (structure) =>
     ipcRenderer.invoke(EXPORT_STRUCTURE_CHANNEL, structure) as Promise<ExportStructureResult>,
   scanAssetSources: () => ipcRenderer.invoke(SCAN_ASSET_SOURCES_CHANNEL) as Promise<AssetScanResult>,

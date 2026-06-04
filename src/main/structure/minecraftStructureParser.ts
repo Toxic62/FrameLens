@@ -1,6 +1,6 @@
 import nbt from 'prismarine-nbt'
+import { inferBlockEntityCapability } from '@shared/blockCapabilities'
 import type {
-  BlockEntityKind,
   BlockEntitySummary,
   BlockPosition,
   ContainerItemSummary,
@@ -123,7 +123,7 @@ function readBlockEntity(value: NbtValue, blockName: string, position: BlockPosi
 
   const record = asRecord(value, 'block nbt')
   const id = typeof record.id === 'string' ? record.id : blockName
-  const kind = inferBlockEntityKind(id, blockName, record)
+  const kind = inferBlockEntityCapability(id, blockName, record).kind
   const items = kind === 'container' ? readContainerItems(record.Items) : []
   return {
     id,
@@ -166,19 +166,6 @@ function readEditableBlockEntityFields(record: NbtRecord): Record<string, string
   }
 
   return fields
-}
-
-function inferBlockEntityKind(id: string, blockName: string, record: NbtRecord): BlockEntityKind {
-  const normalized = `${id} ${blockName}`.toLowerCase()
-  if (normalized.includes('jigsaw')) {
-    return 'jigsaw'
-  }
-
-  if (record.LootTable !== undefined || /chest|barrel|shulker_box|dispenser|dropper/.test(normalized)) {
-    return 'container'
-  }
-
-  return 'generic'
 }
 
 function readEntities(value: NbtValue): EntitySummary[] {

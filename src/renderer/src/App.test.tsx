@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
 import type { LoadedStructure, OpenStructureResult } from '@shared/structure'
@@ -73,8 +73,15 @@ describe('App', () => {
 
     expect(await screen.findByText('restored.nbt')).toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: 'Viewport' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Debug' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Palette' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Textured' })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Fit' })).toBeInTheDocument()
     expect(screen.getAllByRole('button', { name: 'Reset' })[0]).toBeInTheDocument()
+    await waitFor(() => {
+      const lastProps = viewportSpy.mock.calls.at(-1)?.[0] as { renderMode: string }
+      expect(lastProps.renderMode).toBe('textured')
+    })
 
     fireEvent.click(screen.getByRole('button', { name: 'Add' }))
 
@@ -105,6 +112,114 @@ describe('App', () => {
 
     await waitFor(() => expect(openStructureFile).toHaveBeenCalledOnce())
     expect(screen.getByText('restored.nbt')).toBeInTheDocument()
+  })
+
+  it('shows the active instance folder name after scanning asset sources', async () => {
+    window.frameLens = createApiMock({
+      currentStructure: createStructure(),
+      scanAssetSources: vi.fn().mockResolvedValue({
+        activeSourceId: 'instance-1',
+        sources: [
+          {
+            id: 'instance-1',
+            name: 'Better Blocks',
+            rootPath: '/instances/Better Blocks',
+            kind: 'instance',
+            minecraftVersion: '1.21.4',
+            archiveCount: 2,
+            looseAssetRootCount: 1,
+            hasVanillaJar: true,
+            vanillaStatus: 'cached'
+          }
+        ]
+      })
+    })
+
+    render(<App />)
+
+    expect(await screen.findByText('restored.nbt')).toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: 'Better Blocks' })).toBeInTheDocument()
+  })
+
+  it('adds blocks with a matching palette state so they render and export correctly', async () => {
+    window.frameLens = createApiMock({
+      currentStructure: {
+        ...createStructure(),
+        dimensions: { x: 2, y: 1, z: 1 }
+      }
+    })
+
+    render(<App />)
+
+    expect(await screen.findByText('restored.nbt')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+    const addDialog = screen.getByRole('dialog', { name: 'Add block' })
+    fireEvent.change(screen.getByLabelText('Block'), { target: { value: 'minecraft:dirt' } })
+    fireEvent.change(screen.getByLabelText('X'), { target: { value: '1' } })
+    fireEvent.click(within(addDialog).getByRole('button', { name: 'Add' }))
+
+    await waitFor(() => {
+      const lastProps = viewportSpy.mock.calls.at(-1)?.[0] as { structure: LoadedStructure; visibleBlocks: readonly LoadedStructure['blocks'][number][] }
+      const addedBlock = lastProps.visibleBlocks.find((block) => block.name === 'minecraft:dirt')
+      expect(addedBlock).toMatchObject({ position: [1, 0, 0], state: 1 })
+      expect(lastProps.structure.palette).toContainEqual({ index: 1, name: 'minecraft:dirt', properties: {} })
+    })
+  })
+
+  it('creates editable data for a known container without existing block entity NBT', async () => {
+    window.frameLens = createApiMock({
+      currentStructure: {
+        metadata: {
+          fileName: 'containerless-barrel.nbt',
+          byteSize: 256,
+          paletteCount: 1,
+          blockCount: 1,
+          blockEntityCount: 0,
+          entityCount: 0
+        },
+        dimensions: { x: 1, y: 1, z: 1 },
+        palette: [{ index: 0, name: 'minecraft:barrel', properties: {} }],
+        blocks: [{ position: [0, 0, 0], state: 0, name: 'minecraft:barrel', properties: {} }],
+        entities: []
+      }
+    })
+
+    render(<App />)
+
+    expect(await screen.findByText('containerless-barrel.nbt')).toBeInTheDocument()
+    fireEvent.click(screen.getByText('barrel').closest('button')!)
+    fireEvent.click(screen.getByRole('button', { name: 'Edit block data' }))
+
+    expect(screen.getByRole('dialog', { name: 'Block data' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Loot table' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByText('Loot seed')).toBeInTheDocument()
+  })
+
+  it('lets newly added chests choose between container items and lootable mode', async () => {
+    window.frameLens = createApiMock({
+      currentStructure: {
+        ...createStructure(),
+        dimensions: { x: 2, y: 1, z: 1 }
+      }
+    })
+
+    render(<App />)
+
+    expect(await screen.findByText('restored.nbt')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+    const addDialog = screen.getByRole('dialog', { name: 'Add block' })
+    fireEvent.change(screen.getByLabelText('Block'), { target: { value: 'minecraft:chest' } })
+    fireEvent.change(screen.getByLabelText('X'), { target: { value: '1' } })
+    fireEvent.click(screen.getByLabelText('Block entity data'))
+    expect(screen.getByRole('button', { name: 'Lootable' })).toHaveAttribute('aria-pressed', 'true')
+    fireEvent.click(screen.getByRole('button', { name: 'Container' }))
+    fireEvent.click(within(addDialog).getByRole('button', { name: 'Add' }))
+
+    await waitFor(() => {
+      const lastProps = viewportSpy.mock.calls.at(-1)?.[0] as { visibleBlocks: readonly LoadedStructure['blocks'][number][] }
+      const addedBlock = lastProps.visibleBlocks.find((block) => block.name === 'minecraft:chest')
+      expect(addedBlock?.blockEntity).toMatchObject({ kind: 'container', containerMode: 'items', items: [] })
+    })
   })
 
   it('highlights grouped blocks and edits an expanded block entry', async () => {
@@ -230,14 +345,16 @@ describe('App', () => {
 interface ApiMockOptions {
   readonly currentStructure: LoadedStructure | null
   readonly openStructureFile?: () => Promise<OpenStructureResult>
+  readonly scanAssetSources?: Window['frameLens']['scanAssetSources']
 }
 
-function createApiMock({ currentStructure, openStructureFile = vi.fn() }: ApiMockOptions): Window['frameLens'] {
+function createApiMock({ currentStructure, openStructureFile = vi.fn(), scanAssetSources = vi.fn().mockResolvedValue({ sources: [], activeSourceId: null }) }: ApiMockOptions): Window['frameLens'] {
   return {
     openStructureFile,
     getCurrentStructure: vi.fn().mockResolvedValue(currentStructure),
+    updateCurrentStructure: vi.fn(),
     exportStructureFile: vi.fn().mockResolvedValue({ ok: false, reason: 'cancelled' }),
-    scanAssetSources: vi.fn().mockResolvedValue({ sources: [], activeSourceId: null }),
+    scanAssetSources,
     chooseInstanceFolder: vi.fn().mockResolvedValue({ ok: false, source: null, cancelled: true }),
     activateAssetSource: vi.fn(),
     resolveBlockAssets: vi.fn().mockResolvedValue({ activeSource: null, assets: {} })
