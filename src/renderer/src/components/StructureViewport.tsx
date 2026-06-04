@@ -13,6 +13,7 @@ import {
   PerspectiveCamera,
   Raycaster,
   Scene,
+  SRGBColorSpace,
   Texture,
   TextureLoader,
   Vector2,
@@ -70,6 +71,7 @@ interface MeshGroup {
 
 const DEFAULT_DIMENSIONS: StructureDimensions = { x: 16, y: 8, z: 16 }
 const BASE_BLOCK_COLOR = new Color('#67c1ff')
+const SELECTED_BLOCK_TINT = '#ffd166'
 const SELECTED_BLOCK_COLOR = new Color('#ffd166')
 const WHITE = new Color('#ffffff')
 const textureLoader = new TextureLoader()
@@ -322,6 +324,8 @@ function createMaterialInfo(
   if (inputs.renderMode === 'textured') {
     const asset = inputs.blockAssets[createBlockAssetKey(block.name, block.properties)]
     if (asset?.faces) {
+      const isSelected = getBlockKey(block.position) === inputs.selectedBlockKey
+      const tint = isSelected ? SELECTED_BLOCK_TINT : '#ffffff'
       const signature = [
         asset.faces.east,
         asset.faces.west,
@@ -332,14 +336,14 @@ function createMaterialInfo(
       ].join('|')
 
       return {
-        signature: `textured:${signature}`,
+        signature: `textured:${isSelected ? 'selected' : 'default'}:${signature}`,
         material: [
-          createTexturedMaterial(asset.faces.east),
-          createTexturedMaterial(asset.faces.west),
-          createTexturedMaterial(asset.faces.up),
-          createTexturedMaterial(asset.faces.down),
-          createTexturedMaterial(asset.faces.south),
-          createTexturedMaterial(asset.faces.north)
+          createTexturedMaterial(asset.faces.east, tint),
+          createTexturedMaterial(asset.faces.west, tint),
+          createTexturedMaterial(asset.faces.up, tint),
+          createTexturedMaterial(asset.faces.down, tint),
+          createTexturedMaterial(asset.faces.south, tint),
+          createTexturedMaterial(asset.faces.north, tint)
         ]
       }
     }
@@ -365,10 +369,10 @@ function createMaterialInfo(
   }
 }
 
-function createTexturedMaterial(dataUrl: string): MeshLambertMaterial {
+function createTexturedMaterial(dataUrl: string, color: string): MeshLambertMaterial {
   return new MeshLambertMaterial({
-    map: loadTexture(dataUrl),
-    vertexColors: true
+    color,
+    map: loadTexture(dataUrl)
   })
 }
 
@@ -388,6 +392,8 @@ function loadTexture(dataUrl: string): Texture {
   const texture = textureLoader.load(dataUrl)
   texture.magFilter = NearestFilter
   texture.minFilter = NearestFilter
+  texture.generateMipmaps = false
+  texture.colorSpace = SRGBColorSpace
   textureCache.set(dataUrl, texture)
   return texture
 }

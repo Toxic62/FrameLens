@@ -118,6 +118,47 @@ describe('assetService', () => {
     expect(asset?.faces?.north).toBe(`data:image/png;base64,${PNG_1X1.toString('base64')}`)
   })
 
+  it('resolves face texture references from model elements', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'framelens-element-face-assets-'))
+    await mkdir(join(root, 'kubejs', 'assets', 'custom', 'blockstates'), { recursive: true })
+    await mkdir(join(root, 'kubejs', 'assets', 'custom', 'models', 'block'), { recursive: true })
+    await mkdir(join(root, 'kubejs', 'assets', 'custom', 'textures', 'block'), { recursive: true })
+    await writeFile(
+      join(root, 'kubejs', 'assets', 'custom', 'blockstates', 'machine.json'),
+      JSON.stringify({ variants: { '': { model: 'custom:block/machine' } } })
+    )
+    await writeFile(
+      join(root, 'kubejs', 'assets', 'custom', 'models', 'block', 'machine.json'),
+      JSON.stringify({
+        textures: { '0': 'custom:block/machine_side' },
+        elements: [
+          {
+            from: [0, 0, 0],
+            to: [16, 16, 16],
+            faces: {
+              down: { texture: '#0' },
+              up: { texture: '#0' },
+              north: { texture: '#0' },
+              south: { texture: '#0' },
+              west: { texture: '#0' },
+              east: { texture: '#0' }
+            }
+          }
+        ]
+      })
+    )
+    await writeFile(join(root, 'kubejs', 'assets', 'custom', 'textures', 'block', 'machine_side.png'), PNG_1X1)
+
+    await activateAssetRootPath(root)
+    const result = await resolveBlockAssets([{ blockName: 'custom:machine', properties: {} }])
+
+    expect(result.assets['custom:machine']).toMatchObject({
+      assetKey: 'custom:machine',
+      status: 'textured-cube'
+    })
+    expect(result.assets['custom:machine']?.faces?.north).toBe(`data:image/png;base64,${PNG_1X1.toString('base64')}`)
+  })
+
   it.runIf(process.env.CI !== 'true')(
     'resolves a read-only block asset from the Astralis instance when present',
     async () => {

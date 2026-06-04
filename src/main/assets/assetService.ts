@@ -27,6 +27,7 @@ interface ArchiveCache {
 }
 
 type JsonRecord = Record<string, unknown>
+type FaceName = keyof BlockFaceTextures
 
 const MAX_MODEL_DEPTH = 12
 const VERSION_MANIFEST_URL = 'https://piston-meta.mojang.com/mc/game/version_manifest_v2.json'
@@ -43,6 +44,12 @@ interface VanillaAssetResolution {
   readonly status: VanillaAssetStatus
   readonly jarPath: string | null
   readonly message?: string
+}
+
+interface ResolvedModel {
+  readonly textures: Readonly<Record<string, string>>
+  readonly faceTextureReferences: Readonly<Partial<Record<FaceName, string>>>
+  readonly warning?: string
 }
 
 export interface DownloadClient {
@@ -277,7 +284,7 @@ async function resolveBlock(assetKey: string, block: BlockAssetRequest): Promise
   const blockstate = await readAssetJson(activeSource, `assets/${id.namespace}/blockstates/${id.path}.json`)
   const modelReference = blockstate ? chooseModelReference(blockstate, block.properties) : `block/${id.path}`
   const resolvedModel = await resolveModel(activeSource, id.namespace, modelReference)
-  const faceTextureIds = resolveFaceTextureIds(id.namespace, id.path, resolvedModel.textures)
+  const faceTextureIds = resolveFaceTextureIds(id.namespace, id.path, resolvedModel)
   const faces = await loadFaceTextures(activeSource, faceTextureIds)
 
   if (!faces) {
@@ -333,44 +340,67 @@ async function resolveModel(
   defaultNamespace: string,
   modelReference: string,
   depth = 0
-): Promise<{ readonly textures: Readonly<Record<string, string>>; readonly warning?: string }> {
+): Promise<ResolvedModel> {
   if (depth > MAX_MODEL_DEPTH) {
-    return { textures: {}, warning: 'Model parent chain is too deep.' }
+    return { textures: {}, faceTextureReferences: {}, warning: 'Model parent chain is too deep.' }
   }
 
   const id = parseResourceId(modelReference, defaultNamespace)
   const model = await readAssetJson(source, `assets/${id.namespace}/models/${id.path}.json`)
   if (!model) {
-    return { textures: {}, warning: `Missing model ${id.namespace}:${id.path}.` }
+    return { textures: {}, faceTextureReferences: {}, warning: `Missing model ${id.namespace}:${id.path}.` }
   }
 
   const parentReference = getString(model.parent)
-  const parentTextures = parentReference ? (await resolveModel(source, id.namespace, parentReference, depth + 1)).textures : {}
+  const parentModel = parentReference ? await resolveModel(source, id.namespace, parentReference, depth + 1) : null
   const ownTextures = asStringRecord(model.textures)
+  const ownFaceTextureReferences = extractFaceTextureReferences(model)
 
-  return {
+  const resolved: ResolvedModel = {
     textures: {
-      ...parentTextures,
+      ...(parentModel?.textures ?? {}),
       ...ownTextures
-    }
+    },
+    faceTextureReferences: Object.keys(ownFaceTextureReferences).length > 0 ? ownFaceTextureReferences : (parentModel?.faceTextureReferences ?? {})
   }
+
+  if (parentModel?.warning) {
+    return { ...resolved, warning: parentModel.warning }
+  }
+
+  return resolved
 }
 
 function resolveFaceTextureIds(
   namespace: string,
   blockPath: string,
-  textures: Readonly<Record<string, string>>
+  model: ResolvedModel
 ): Record<keyof BlockFaceTextures, string> {
+  const textures = model.textures
+  const modelFaces = model.faceTextureReferences
+  const direct = `${namespace}:block/${blockPath}`
+  const resolvedModelFaces = {
+    up: resolveTextureReference(modelFaces.up, textures),
+    down: resolveTextureReference(modelFaces.down, textures),
+    north: resolveTextureReference(modelFaces.north, textures),
+    south: resolveTextureReference(modelFaces.south, textures),
+    east: resolveTextureReference(modelFaces.east, textures),
+    west: resolveTextureReference(modelFaces.west, textures)
+  }
   const all = resolveTextureReference(textures.all, textures)
   const side = resolveTextureReference(textures.side, textures) ?? all
-  const top = resolveTextureReference(textures.top, textures) ?? resolveTextureReference(textures.up, textures) ?? all ?? side
+  const top = resolvedModelFaces.up ?? resolveTextureReference(textures.top, textures) ?? resolveTextureReference(textures.up, textures) ?? all ?? side
   const bottom =
-    resolveTextureReference(textures.bottom, textures) ?? resolveTextureReference(textures.down, textures) ?? all ?? side ?? top
-  const north = resolveTextureReference(textures.north, textures) ?? side ?? all ?? top
-  const south = resolveTextureReference(textures.south, textures) ?? side ?? north
-  const east = resolveTextureReference(textures.east, textures) ?? side ?? north
-  const west = resolveTextureReference(textures.west, textures) ?? side ?? north
-  const direct = `${namespace}:block/${blockPath}`
+    resolvedModelFaces.down ??
+    resolveTextureReference(textures.bottom, textures) ??
+    resolveTextureReference(textures.down, textures) ??
+    all ??
+    side ??
+    top
+  const north = resolvedModelFaces.north ?? resolveTextureReference(textures.north, textures) ?? side ?? all ?? top
+  const south = resolvedModelFaces.south ?? resolveTextureReference(textures.south, textures) ?? side ?? north
+  const east = resolvedModelFaces.east ?? resolveTextureReference(textures.east, textures) ?? side ?? north
+  const west = resolvedModelFaces.west ?? resolveTextureReference(textures.west, textures) ?? side ?? north
 
   return {
     up: toTextureId(top ?? direct, namespace),
@@ -393,6 +423,31 @@ function resolveTextureReference(value: string | undefined, textures: Readonly<R
 
   const key = value.slice(1)
   return resolveTextureReference(textures[key], textures)
+}
+
+function extractFaceTextureReferences(model: JsonRecord): Partial<Record<FaceName, string>> {
+  const elements = Array.isArray(model.elements) ? model.elements : []
+  const references: Partial<Record<FaceName, string>> = {}
+
+  for (const element of elements) {
+    const faces = asRecord(asRecord(element)?.faces)
+    if (!faces) {
+      continue
+    }
+
+    for (const face of ['up', 'down', 'north', 'south', 'east', 'west'] as const) {
+      if (references[face]) {
+        continue
+      }
+
+      const textureReference = getString(asRecord(faces[face])?.texture)
+      if (textureReference) {
+        references[face] = textureReference
+      }
+    }
+  }
+
+  return references
 }
 
 async function loadFaceTextures(
